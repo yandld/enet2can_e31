@@ -1,0 +1,1362 @@
+<?xml version="1.0" encoding= "UTF-8" ?>
+<configuration name="MCXE31B" xsi:schemaLocation="http://mcuxpresso.nxp.com/XSD/mex_configuration_19 http://mcuxpresso.nxp.com/XSD/mex_configuration_19.xsd" uuid="be983a51-6cb7-45c8-b336-88e86b77805c" version="19" xmlns="http://mcuxpresso.nxp.com/XSD/mex_configuration_19" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+   <common>
+      <processor>MCXE31B</processor>
+      <package>MCXE31BMPB</package>
+      <mcu_data>ksdk2_0</mcu_data>
+      <cores selected="core0">
+         <core name="Cortex-M7F" id="core0" description="M7 core"/>
+      </cores>
+      <description>Configuration imported from C:\Users\yandld\Desktop\enet2can_e31</description>
+   </common>
+   <preferences>
+      <validate_boot_init_only>true</validate_boot_init_only>
+      <generate_code_modified_registers_only>false</generate_code_modified_registers_only>
+      <custom_copyright>
+         <text>/*
+ * Copyright 2026 NXP
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+</text>
+         <enabled>true</enabled>
+      </custom_copyright>
+      <update_include_paths>true</update_include_paths>
+      <enable_parallel_routing>true</enable_parallel_routing>
+      <generate_registers_defines>false</generate_registers_defines>
+   </preferences>
+   <tools>
+      <pins name="Pins" version="17.0" enabled="true" update_project_code="true">
+         <pins_profile>
+            <processor_version>25.12.10</processor_version>
+            <pin_labels>
+               <pin_label pin_num="27" pin_signal="PTE3" label="pin_pte3_config" identifier="pin_pte3_config"/>
+               <pin_label pin_num="26" pin_signal="PTE14" label="dsa" identifier="dsa"/>
+               <pin_label pin_num="49" pin_signal="PTC3" label="ENET_PHY_RST" identifier="ENET_PHY_RST"/>
+               <pin_label pin_num="81" pin_signal="PTC13" label="SAI_0_SYNC" identifier="SAI_0_SYNC"/>
+               <pin_label pin_num="79" pin_signal="PTB2" label="SAI_0_D0_TX" identifier="SAI_0_D0_TX"/>
+               <pin_label pin_num="83" pin_signal="PTC12" label="SAI_0_BCLK" identifier="SAI_0_BCLK"/>
+            </pin_labels>
+         </pins_profile>
+         <functions_list>
+            <function name="BOARD_InitPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>true</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins/>
+            </function>
+            <function name="BOARD_InitDEBUG_UARTPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <createDeInit>true</createDeInit>
+                  <callFromInitBoot>true</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPUART_5" description="Peripheral LPUART_5 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitDEBUG_UARTPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitDEBUG_UARTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitDEBUG_UARTPins_deinit">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitDEBUG_UARTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitDEBUG_UARTPins_deinit">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPUART_5" signal="RX" pin_num="27" pin_signal="PTE3">
+                     <pin_features>
+                        <pin_feature name="identifier" value=""/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPUART_5" signal="TX" pin_num="26" pin_signal="PTE14">
+                     <pin_features>
+                        <pin_feature name="identifier" value=""/>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitLEDsPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitLEDsPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitLEDsPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="SIUL2" signal="GPIO, 80" pin_num="66" pin_signal="PTC16">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                        <pin_feature name="initValue" value="state_1"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 78" pin_num="71" pin_signal="PTC14">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                        <pin_feature name="initValue" value="state_1"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 54" pin_num="67" pin_signal="PTB22">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                        <pin_feature name="initValue" value="state_1"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitBUTTONsPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitBUTTONsPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitBUTTONsPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="SIUL2" signal="GPIO, 101" pin_num="53" pin_signal="PTD5">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitEXTIRQPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitEXTIRQPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitEXTIRQPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="SIUL2" signal="EIRQ, 13" pin_num="53" pin_signal="PTD5"/>
+               </pins>
+            </function>
+            <function name="BOARD_InitCLOCKOUTPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="SYSTEM" description="Peripheral SYSTEM signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitCLOCKOUTPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitCLOCKOUTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitCLOCKOUTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="SYSTEM" signal="CLKOUT_RUN" pin_num="40" pin_signal="PTD14"/>
+               </pins>
+            </function>
+            <function name="BOARD_InitAdcPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="ADC_0" description="Peripheral ADC_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitAdcPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitAdcPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitAdcPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="ADC_0" signal="IN, 5" pin_num="10" pin_signal="PTE10">
+                     <pin_features>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="disabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitUARTPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPUART_2" description="Peripheral LPUART_2 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitUARTPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitUARTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitUARTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPUART_2" signal="RX" pin_num="172" pin_signal="PTA8"/>
+                  <pin peripheral="LPUART_2" signal="TX" pin_num="171" pin_signal="PTA9">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitI2CPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <createDeInit>true</createDeInit>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPI2C_1" description="Peripheral LPI2C_1 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitI2CPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="Peripheral" resourceId="LPI2C_0" description="Peripheral LPI2C_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitI2CPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitI2CPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitI2CPins_deinit">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitI2CPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitI2CPins_deinit">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPI2C_1" signal="SDA" pin_num="141" pin_signal="PTC6">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPI2C_1" signal="SCL" pin_num="140" pin_signal="PTC7">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPI2C_0" signal="SDA" pin_num="41" pin_signal="PTD13">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPI2C_0" signal="SCL" pin_num="40" pin_signal="PTD14">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitSPIPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <createDeInit>true</createDeInit>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPSPI_1" description="Peripheral LPSPI_1 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitSPIPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="Peripheral" resourceId="LPSPI_0" description="Peripheral LPSPI_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitSPIPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitSPIPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitSPIPins_deinit">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitSPIPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitSPIPins_deinit">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPSPI_1" signal="PCS1" pin_num="42" pin_signal="PTB18">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_1" signal="SCK" pin_num="30" pin_signal="PTA28">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_1" signal="SDI" pin_num="32" pin_signal="PTA29">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="disabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_1" signal="SDO" pin_num="33" pin_signal="PTA30">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_0" signal="SDI" pin_num="163" pin_signal="PTE0">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_0" signal="SCK" pin_num="162" pin_signal="PTE1">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_0" signal="SDO" pin_num="147" pin_signal="PTE2">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPSPI_0" signal="PCS2" pin_num="146" pin_signal="PTE6">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitLCDPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPI2C_1" description="Peripheral LPI2C_1 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitLCDPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="Peripheral" resourceId="FLEXIO" description="Peripheral FLEXIO signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitLCDPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitLCDPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitLCDPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPI2C_1" signal="SDA" pin_num="141" pin_signal="PTC6">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPI2C_1" signal="SCL" pin_num="140" pin_signal="PTC7">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 46" pin_num="114" pin_signal="PTB14">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="pullEnable" value="disabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 73" pin_num="97" pin_signal="PTC9">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 47" pin_num="113" pin_signal="PTB15">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="padKeepingEnable" value="disabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 72" pin_num="98" pin_signal="PTC8">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 33" pin_num="94" pin_signal="PTB1">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 15" pin_num="90" pin_signal="PTC11">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="disabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 14" pin_num="95" pin_signal="PTB0">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullEnable" value="disabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 74" pin_num="92" pin_signal="PTC10">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 16" pin_num="87" pin_signal="PTC23">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 17" pin_num="88" pin_signal="PTC24">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 18" pin_num="89" pin_signal="PTC25">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 19" pin_num="91" pin_signal="PTC26">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 20" pin_num="93" pin_signal="PTC27">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 21" pin_num="96" pin_signal="PTC28">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 22" pin_num="99" pin_signal="PTC29">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 23" pin_num="101" pin_signal="PTC30">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 24" pin_num="103" pin_signal="PTC31">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 25" pin_num="111" pin_signal="PTD20">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 26" pin_num="115" pin_signal="PTD21">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 27" pin_num="118" pin_signal="PTD22">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 28" pin_num="122" pin_signal="PTD23">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 29" pin_num="125" pin_signal="PTD24">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 30" pin_num="131" pin_signal="PTD26">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 31" pin_num="132" pin_signal="PTD27">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitCMPPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPCMP_1" description="Peripheral LPCMP_1 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitCMPPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitCMPPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitCMPPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPCMP_1" signal="IN, 0" pin_num="137" pin_signal="PTA0">
+                     <pin_features>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 1" pin_num="135" pin_signal="PTA1">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="disabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SIUL2" signal="GPIO, 2" pin_num="124" pin_signal="PTA2">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitBctuTrigSrcPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="EMIOS_0" description="Peripheral EMIOS_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitBctuTrigSrcPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitBctuTrigSrcPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitBctuTrigSrcPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="EMIOS_0" signal="EMIOS_CH, 1_G" pin_num="9" pin_signal="PTE11">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitFlexCANPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="FLEXCAN_0" description="Peripheral FLEXCAN_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitFlexCANPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitFlexCANPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitFlexCANPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="FLEXCAN_0" signal="TX" pin_num="100" pin_signal="PTA7"/>
+                  <pin peripheral="FLEXCAN_0" signal="RX" pin_num="102" pin_signal="PTA6"/>
+               </pins>
+            </function>
+            <function name="BOARD_InitEMIOSPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="EMIOS_0" description="Peripheral EMIOS_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitEMIOSPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="Peripheral" resourceId="TRGMUX" description="Peripheral TRGMUX signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitEMIOSPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitEMIOSPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitEMIOSPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="EMIOS_0" signal="EMIOS_CH, 1_G" pin_num="9" pin_signal="PTE11">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMIOS_0" signal="EMIOS_CH, 2_G" pin_num="8" pin_signal="PTD0">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMIOS_0" signal="EMIOS_CH, 3_G" pin_num="7" pin_signal="PTD1">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMIOS_0" signal="EMIOS_CH, 4_G" pin_num="112" pin_signal="PTB16">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="TRGMUX" signal="TRGMUX_IN, 12" pin_num="1" pin_signal="PTA18"/>
+               </pins>
+            </function>
+            <function name="BOARD_InitFLASHPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>false</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="QUADSPI" description="Peripheral QUADSPI signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitFLASHPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitFLASHPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitFLASHPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="QUADSPI" signal="SCK, FA" pin_num="56" pin_signal="PTD10">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                        <pin_feature name="slewRate" value="fastestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="QUADSPI" signal="PCS, FA" pin_num="49" pin_signal="PTC3">
+                     <pin_features>
+                        <pin_feature name="inputBufferEnable" value="disabled"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                        <pin_feature name="slewRate" value="fastestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="QUADSPI" signal="IO0, FA" pin_num="55" pin_signal="PTD11">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                        <pin_feature name="slewRate" value="fastestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="QUADSPI" signal="IO1, FA" pin_num="51" pin_signal="PTD7">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                        <pin_feature name="slewRate" value="fastestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="QUADSPI" signal="IO2, FA" pin_num="54" pin_signal="PTD12">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                        <pin_feature name="slewRate" value="fastestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="QUADSPI" signal="IO3, FA" pin_num="50" pin_signal="PTC2">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="outputBufferEnable" value="enabled"/>
+                        <pin_feature name="slewRate" value="fastestSetting"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitACCELPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="LPI2C_0" description="Peripheral LPI2C_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitACCELPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitACCELPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitACCELPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="LPI2C_0" signal="SDA" pin_num="41" pin_signal="PTD13">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="LPI2C_0" signal="SCL" pin_num="40" pin_signal="PTD14">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitFLEXIO_I2CPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="FLEXIO" description="Peripheral FLEXIO signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitFLEXIO_I2CPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_I2CPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_I2CPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 6" pin_num="172" pin_signal="PTA8">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 7" pin_num="171" pin_signal="PTA9">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitFLEXIO_PWMPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="FLEXIO" description="Peripheral FLEXIO signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitFLEXIO_PWMPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_PWMPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_PWMPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 6" pin_num="172" pin_signal="PTA8">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 7" pin_num="171" pin_signal="PTA9">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="pullSelect" value="pullUp"/>
+                        <pin_feature name="pullEnable" value="enabled"/>
+                        <pin_feature name="padKeepingEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitFLEXIO_SPIPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="FLEXIO" description="Peripheral FLEXIO signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitFLEXIO_SPIPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_SPIPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_SPIPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 0" pin_num="39" pin_signal="PTA31">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 1" pin_num="42" pin_signal="PTB18">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 2" pin_num="43" pin_signal="PTB19">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 3" pin_num="44" pin_signal="PTB20">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitFLEXIO_UARTPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="FLEXIO" description="Peripheral FLEXIO signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitFLEXIO_UARTPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_UARTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitFLEXIO_UARTPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 0" pin_num="39" pin_signal="PTA31">
+                     <pin_features>
+                        <pin_feature name="direction" value="OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="FLEXIO" signal="FXIO_D, 1" pin_num="42" pin_signal="PTB18">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitEMACPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="EMAC" description="Peripheral EMAC signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitEMACPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitEMACPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitEMACPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="EMAC" signal="MII_RMII_MDIO" pin_num="48" pin_signal="PTB4">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMAC" signal="MII_RMII_MDC" pin_num="47" pin_signal="PTB5"/>
+                  <pin peripheral="EMAC" signal="MII_RMII_TXD0" pin_num="50" pin_signal="PTC2">
+                     <pin_features>
+                        <pin_feature name="slewRate" value="slowestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMAC" signal="MII_RMII_TXD1" pin_num="51" pin_signal="PTD7">
+                     <pin_features>
+                        <pin_feature name="slewRate" value="slowestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMAC" signal="MII_RMII_TX_EN" pin_num="54" pin_signal="PTD12">
+                     <pin_features>
+                        <pin_feature name="slewRate" value="slowestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMAC" signal="MII_RMII_RX_DV" pin_num="65" pin_signal="PTC17"/>
+                  <pin peripheral="EMAC" signal="MII_RMII_RXD0" pin_num="61" pin_signal="PTC1"/>
+                  <pin peripheral="EMAC" signal="MII_RMII_RXD1" pin_num="62" pin_signal="PTC0"/>
+                  <pin peripheral="SIUL2" signal="GPIO, 67" pin_num="49" pin_signal="PTC3">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="initValue" value="state_1"/>
+                        <pin_feature name="slewRate" value="slowestSetting"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="EMAC" signal="MII_RMII_TX_CLK" pin_num="55" pin_signal="PTD11">
+                     <pin_features>
+                        <pin_feature name="safeMode" value="outputOff"/>
+                        <pin_feature name="slewRate" value="slowestSetting"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+            <function name="BOARD_InitSAIPins">
+               <description>Configures pin routing and optionally pin electrical features.</description>
+               <options>
+                  <callFromInitBoot>false</callFromInitBoot>
+                  <coreID>core0</coreID>
+                  <enableClock>true</enableClock>
+               </options>
+               <dependencies>
+                  <dependency resourceType="Peripheral" resourceId="SAI_0" description="Peripheral SAI_0 signals are routed in the Pins Tool, but the peripheral is not initialized in the Peripherals Tool." problem_level="1" source="Pins:BOARD_InitSAIPins">
+                     <feature name="initialized" evaluation="equal">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Pins initialization requires the COMMON Driver in the project." problem_level="2" source="Pins:BOARD_InitSAIPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.siul2" description="Pins initialization requires the SIUL2 Driver in the project." problem_level="2" source="Pins:BOARD_InitSAIPins">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <pins>
+                  <pin peripheral="SAI_0" signal="BCLK" pin_num="83" pin_signal="PTC12">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SAI_0" signal="SYNC" pin_num="81" pin_signal="PTC13">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+                  <pin peripheral="SAI_0" signal="D0" pin_num="79" pin_signal="PTB2">
+                     <pin_features>
+                        <pin_feature name="direction" value="INPUT/OUTPUT"/>
+                        <pin_feature name="inputBufferEnable" value="enabled"/>
+                     </pin_features>
+                  </pin>
+               </pins>
+            </function>
+         </functions_list>
+      </pins>
+      <clocks name="Clocks" version="19.0" enabled="true" update_project_code="true">
+         <clocks_profile>
+            <processor_version>25.12.10</processor_version>
+         </clocks_profile>
+         <clock_configurations>
+            <clock_configuration name="BOARD_BootClockRUN" id_prefix="" prefix_user_defined="false">
+               <description></description>
+               <options/>
+               <dependencies>
+                  <dependency resourceType="PeripheralUnifiedSignal" resourceId="FXOSC.extal" description="&apos;External pin&apos; (Pins tool id: FXOSC.extal, Clocks tool id: FXOSC.EXTAL) needs to be routed" problem_level="1" source="Clocks:BOARD_BootClockRUN">
+                     <feature name="routed" evaluation="">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="PeripheralUnifiedSignal" resourceId="FXOSC.xtal" description="&apos;External pin&apos; (Pins tool id: FXOSC.xtal, Clocks tool id: FXOSC.XTAL) needs to be routed" problem_level="1" source="Clocks:BOARD_BootClockRUN">
+                     <feature name="routed" evaluation="">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.common" description="Clocks initialization requires the COMMON Driver in the project." problem_level="2" source="Clocks:BOARD_BootClockRUN">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+                  <dependency resourceType="SWComponent" resourceId="platform.drivers.clock" description="Clocks initialization requires the CLOCK Driver in the project." problem_level="2" source="Clocks:BOARD_BootClockRUN">
+                     <feature name="enabled" evaluation="equal" configuration="core0">
+                        <data>true</data>
+                     </feature>
+                  </dependency>
+               </dependencies>
+               <clock_sources>
+                  <clock_source id="FXOSC.FXOSC.outFreq" value="16 MHz" locked="false" enabled="true"/>
+               </clock_sources>
+               <clock_outputs>
+                  <clock_output id="AIPS_PLAT_CLK.outFreq" value="80 MHz" locked="false" accuracy=""/>
+                  <clock_output id="AIPS_SLOW_CLK.outFreq" value="40 MHz" locked="false" accuracy=""/>
+                  <clock_output id="CLKOUT_STANDBY.outFreq" value="24 MHz" locked="false" accuracy=""/>
+                  <clock_output id="CORE_CLK.outFreq" value="160 MHz" locked="false" accuracy=""/>
+                  <clock_output id="DCM_CLK.outFreq" value="40 MHz" locked="false" accuracy=""/>
+                  <clock_output id="EMAC_RX_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="EMAC_TS_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="EMAC_TX_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FIRC_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FLEXCAN0_PE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FLEXCAN1_PE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FLEXCAN2_PE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FLEXCAN3_PE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FLEXCAN4_PE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FLEXCAN5_PE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="FXOSC_CLK.outFreq" value="16 MHz" locked="false" accuracy=""/>
+                  <clock_output id="HSE_CLK.outFreq" value="80 MHz" locked="false" accuracy=""/>
+                  <clock_output id="LBIST_CLK.outFreq" value="40 MHz" locked="false" accuracy=""/>
+                  <clock_output id="PLL_PHI0_CLK.outFreq" value="160 MHz" locked="false" accuracy=""/>
+                  <clock_output id="PLL_PHI1_CLK.outFreq" value="160 MHz" locked="false" accuracy=""/>
+                  <clock_output id="QSPI_2xSFCK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="QSPI_MEM_CLK.outFreq" value="160 MHz" locked="false" accuracy=""/>
+                  <clock_output id="QSPI_SFCK.outFreq" value="24 MHz" locked="false" accuracy=""/>
+                  <clock_output id="SIRC_CLK.outFreq" value="32 kHz" locked="false" accuracy=""/>
+                  <clock_output id="STM0_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="STM1_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+                  <clock_output id="TRACE_CLK.outFreq" value="48 MHz" locked="false" accuracy=""/>
+               </clock_outputs>
+               <clock_settings>
+                  <setting id="ClockPostInitConfig" value="BOARD_ClockPostConfig" locked="false"/>
+                  <setting id="ClockPreInitConfig" value="BOARD_ClockPreConfig" locked="false"/>
+                  <setting id="JTAG_TCK_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX10_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX11_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX1_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX2_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX3_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX4_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX5_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX6_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX7_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX8_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="MUX9_CSC_DC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="SXOSC_INIT_Config" value="custom" locked="false"/>
+                  <setting id="CORE_PLLODIV_0_DE" value="Enabled" locked="false"/>
+                  <setting id="CORE_PLLODIV_1_DE" value="Enabled" locked="false"/>
+                  <setting id="CORE_PLL_PD" value="Power_up" locked="false"/>
+                  <setting id="FXOSC_PM" value="Crystal_mode" locked="false"/>
+                  <setting id="MC_CGM.MUX_0_CSC.sel" value="PLL.PLL_PHI0_CLK" locked="false"/>
+                  <setting id="MC_CGM.MUX_0_DC_1.scale" value="2" locked="true"/>
+                  <setting id="MC_CGM.MUX_0_DC_2.scale" value="4" locked="true"/>
+                  <setting id="MC_CGM.MUX_0_DC_3.scale" value="2" locked="true"/>
+                  <setting id="MC_CGM.MUX_0_DC_4.scale" value="4" locked="true"/>
+                  <setting id="MC_CGM.MUX_6_DC_0.scale" value="4" locked="true"/>
+                  <setting id="MUX_0_DC_0_Trigger" value="Common" locked="false"/>
+                  <setting id="MUX_0_DC_1_Trigger" value="Common" locked="false"/>
+                  <setting id="MUX_0_DC_2_Trigger" value="Common" locked="false"/>
+                  <setting id="MUX_0_DC_3_Trigger" value="Common" locked="false"/>
+                  <setting id="MUX_0_DC_4_Trigger" value="Common" locked="false"/>
+                  <setting id="MUX_0_DC_5_Trigger" value="Common" locked="false"/>
+                  <setting id="MUX_0_DC_6_Trigger" value="Common" locked="false"/>
+                  <setting id="PLL.CORE_MFD.scale" value="120" locked="true"/>
+                  <setting id="PLL.ODIV2.scale" value="2" locked="true"/>
+                  <setting id="PLL.PLLODIV_0.scale" value="3" locked="true"/>
+                  <setting id="PLL.PLLODIV_1.scale" value="3" locked="true"/>
+                  <setting id="PLL.PLL_PREDIV.scale" value="2" locked="true"/>
+               </clock_settings>
+               <called_from_default_init>true</called_from_default_init>
+            </clock_configuration>
+         </clock_configurations>
+      </clocks>
+      <dcdx name="DCDx" version="4.0" enabled="false" update_project_code="true">
+         <dcdx_profile>
+            <processor_version>N/A</processor_version>
+         </dcdx_profile>
+         <dcdx_configurations/>
+      </dcdx>
+      <periphs name="Peripherals" version="15.0" enabled="false" update_project_code="true">
+         <peripherals_profile>
+            <processor_version>N/A</processor_version>
+         </peripherals_profile>
+         <functional_groups/>
+         <components/>
+      </periphs>
+      <tee name="TEE" version="11.0" enabled="false" update_project_code="true">
+         <tee_profile>
+            <processor_version>N/A</processor_version>
+         </tee_profile>
+      </tee>
+   </tools>
+</configuration>
