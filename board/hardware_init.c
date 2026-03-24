@@ -5,7 +5,6 @@
  */
 /*${header:start}*/
 #include "pin_mux.h"
-#include "app.h"
 #include "clock_config.h"
 #include "board.h"
 /*${header:end}*/

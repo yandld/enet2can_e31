@@ -45,6 +45,7 @@ void BOARD_InitDebugConsole(void);
 void BOARD_ConfigMPU(void);
 void BOARD_ClockPreConfig(void);
 void BOARD_ClockPostConfig(void);
+void BOARD_InitHardware(void);
 
 #if defined(__cplusplus)
 }
