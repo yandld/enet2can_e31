@@ -470,6 +470,92 @@ void BOARD_InitFlexCANPins(void)
 /* clang-format off */
 /*
  * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+BOARD_InitMIKROEUARTPins:
+- options: {callFromInitBoot: 'false', coreID: core0, enableClock: 'false'}
+- pin_list:
+  - {pin_num: 'XX', peripheral: LPUART_2, signal: TX, pin_signal: PTE12, direction: OUTPUT}
+  - {pin_num: 'XX', peripheral: LPUART_2, signal: RX, pin_signal: PTD17}
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS ***********
+ */
+/* clang-format on */
+
+/* FUNCTION ************************************************************************************************************
+ *
+ * Function Name : BOARD_InitMIKROEUARTPins
+ * Description   : LPUART2 MIKROE connector pins.
+ *                 PTE12 (TX-MIKROE), PTD17 (RX-MIKROE [4])
+ *                 TODO: Fill in correct mux/IMCR values from the reference manual.
+ *
+ * END ****************************************************************************************************************/
+void BOARD_InitMIKROEUARTPins(void)
+{
+    /* PTE12 is configured as LPUART_2 TX */
+    /* TODO: set .mux to the correct ALT for LPUART2_TX on PTE12 */
+    const siul2_pin_settings_t BOARD_INITMIKROEUARTPINS_PTE12 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 140u,                              /* PTE12: 128 + 12 */
+        .mux                         = kPORT_MUX_ALT3,                   /* TODO: verify ALT */
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_DISABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_ENABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITMIKROEUARTPINS_PTE12);
+
+    /* PTD17 is configured as LPUART_2 RX */
+    /* TODO: set .inputMuxReg and .inputMux to the correct IMCR index/ALT for LPUART2_RX on PTD17 */
+    const siul2_pin_settings_t BOARD_INITMIKROEUARTPINS_PTD17 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 113u,                              /* PTD17: 96 + 17 */
+        .mux                         = kPORT_MUX_AS_GPIO,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_ENABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_DISABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .inputMuxReg                 = {
+                                         701-512
+                                       },
+        .inputMux                    = {
+                                         kPORT_INPUT_MUX_ALT2,           /* TODO: verify ALT */
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT
+                                       },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITMIKROEUARTPINS_PTD17);
+}
+
+/* clang-format off */
+/*
+ * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
 BOARD_InitEMACPins:
 - options: {callFromInitBoot: 'false', coreID: core0, enableClock: 'true'}
 - pin_list:

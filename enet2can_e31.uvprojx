@@ -420,6 +420,11 @@
               <FileType>5</FileType>
               <FilePath>board/pin_mux.h</FilePath>
             </File>
+            <File>
+              <FileName>uart2.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\source\uart2.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

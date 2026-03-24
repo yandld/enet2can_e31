@@ -50,6 +50,7 @@
 #include "fsl_debug_console.h"
 #include "fsl_flexcan.h"
 #include "board.h"
+#include "uart2.h"
 
 /*******************************************************************************
  * Types
@@ -360,6 +361,7 @@ int main(void)
         can_start_rx(&g_can[i]);
         PRINTF("[CAN%d] ready\r\n", i);
     }
+    uart2_init();
     PRINTF("\r\n");
 
     while (1)
@@ -374,5 +376,6 @@ int main(void)
             if (ch->rxDone)
                 can_handle_rx(ch);
         }
+        uart2_poll(g_ms);
     }
 }
