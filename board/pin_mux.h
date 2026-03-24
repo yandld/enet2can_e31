@@ -68,145 +68,11 @@ void BOARD_InitDEBUG_UARTPins(void);
  *
  */
 void BOARD_InitDEBUG_UARTPins_deinit(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitLEDsPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitBUTTONsPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitEXTIRQPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitCLOCKOUTPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitAdcPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitUARTPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitI2CPins(void);
-
-/*!
- * @brief This is a de-initialization function for 'BOARD_InitI2CPins' function.
- * It sets all pins features (routing, direction and electrical) to their after-reset state.
- * It also tries to route the previous peripheral signals to their default pins.
- *
- */
-void BOARD_InitI2CPins_deinit(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitSPIPins(void);
-
-/*!
- * @brief This is a de-initialization function for 'BOARD_InitSPIPins' function.
- * It sets all pins features (routing, direction and electrical) to their after-reset state.
- * It also tries to route the previous peripheral signals to their default pins.
- *
- */
-void BOARD_InitSPIPins_deinit(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitLCDPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitCMPPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitBctuTrigSrcPins(void);
-
 /*!
  * @brief Configures pin routing and optionally pin electrical features.
  *
  */
 void BOARD_InitFlexCANPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitEMIOSPins(void);
-
-/*! @name PTC3 (number 49), ENET_PHY_RST
-  @{ */
-
-/* Defined symbols */
-#define BOARD_INITFLASHPINS_ENET_PHY_RST_PORT PTC                 /*!<@brief PORT peripheral base pointer */
-#define BOARD_INITFLASHPINS_ENET_PHY_RST_PIN 3U                   /*!<@brief PORT pin number */
-#define BOARD_INITFLASHPINS_ENET_PHY_RST_PIN_MASK (1U << 3U)      /*!<@brief PORT pin mask */
-                                                                  /* @} */
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitFLASHPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitACCELPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitFLEXIO_I2CPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitFLEXIO_PWMPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitFLEXIO_SPIPins(void);
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitFLEXIO_UARTPins(void);
 
 /*! @name PTC3 (number 49), ENET_PHY_RST
   @{ */
@@ -227,39 +93,6 @@ void BOARD_InitFLEXIO_UARTPins(void);
  *
  */
 void BOARD_InitEMACPins(void);
-
-/*! @name PTC12 (number 83), SAI_0_BCLK
-  @{ */
-
-/* Defined symbols */
-#define BOARD_INITSAIPINS_SAI_0_BCLK_PORT PTC                  /*!<@brief PORT peripheral base pointer */
-#define BOARD_INITSAIPINS_SAI_0_BCLK_PIN 12U                   /*!<@brief PORT pin number */
-#define BOARD_INITSAIPINS_SAI_0_BCLK_PIN_MASK (1U << 12U)      /*!<@brief PORT pin mask */
-                                                               /* @} */
-
-/*! @name PTC13 (number 81), SAI_0_SYNC
-  @{ */
-
-/* Defined symbols */
-#define BOARD_INITSAIPINS_SAI_0_SYNC_PORT PTC                  /*!<@brief PORT peripheral base pointer */
-#define BOARD_INITSAIPINS_SAI_0_SYNC_PIN 13U                   /*!<@brief PORT pin number */
-#define BOARD_INITSAIPINS_SAI_0_SYNC_PIN_MASK (1U << 13U)      /*!<@brief PORT pin mask */
-                                                               /* @} */
-
-/*! @name PTB2 (number 79), SAI_0_D0_TX
-  @{ */
-
-/* Defined symbols */
-#define BOARD_INITSAIPINS_SAI_0_D0_TX_PORT PTB                 /*!<@brief PORT peripheral base pointer */
-#define BOARD_INITSAIPINS_SAI_0_D0_TX_PIN 2U                   /*!<@brief PORT pin number */
-#define BOARD_INITSAIPINS_SAI_0_D0_TX_PIN_MASK (1U << 2U)      /*!<@brief PORT pin mask */
-                                                               /* @} */
-
-/*!
- * @brief Configures pin routing and optionally pin electrical features.
- *
- */
-void BOARD_InitSAIPins(void);
 
 #if defined(__cplusplus)
 }
