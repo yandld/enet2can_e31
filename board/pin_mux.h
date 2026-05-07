@@ -95,6 +95,12 @@ void BOARD_InitFlexCANPins(void);
 void BOARD_InitMIKROEUARTPins(void);
 
 /*!
+ * @brief LPUART0/LPUART3 RS485 smoke-test pins.
+ *
+ */
+void BOARD_InitRS485UARTPins(void);
+
+/*!
  * @brief Configures pin routing and optionally pin electrical features.
  *
  */

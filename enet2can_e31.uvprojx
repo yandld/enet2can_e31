@@ -425,6 +425,11 @@
               <FileType>1</FileType>
               <FilePath>.\source\uart2.c</FilePath>
             </File>
+            <File>
+              <FileName>uart_smoke.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\source\uart_smoke.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

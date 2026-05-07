@@ -470,6 +470,156 @@ void BOARD_InitFlexCANPins(void)
 /* clang-format off */
 /*
  * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
+BOARD_InitRS485UARTPins:
+- options: {callFromInitBoot: 'false', coreID: core0, enableClock: 'false'}
+- pin_list:
+  - {pin_num: 'XX', peripheral: LPUART_0, signal: TX, pin_signal: PTA3, direction: OUTPUT}
+  - {pin_num: 'XX', peripheral: LPUART_0, signal: RX, pin_signal: PTA2}
+  - {pin_num: 'XX', peripheral: LPUART_3, signal: TX, pin_signal: PTD2, direction: OUTPUT}
+  - {pin_num: 'XX', peripheral: LPUART_3, signal: RX, pin_signal: PTD3}
+ * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS ***********
+ */
+/* clang-format on */
+
+/* FUNCTION ************************************************************************************************************
+ *
+ * Function Name : BOARD_InitRS485UARTPins
+ * Description   : Configures LPUART0/LPUART3 smoke-test pins.
+ *                 Verified mux selections:
+ *                   PTA3 = LPUART0_TX  ALT6
+ *                   PTA2 = LPUART0_RX  IMCR187 ALT1
+ *                   PTD2 = LPUART3_TX  ALT6
+ *                   PTD3 = LPUART3_RX  IMCR190 ALT3
+ *
+ * END ****************************************************************************************************************/
+void BOARD_InitRS485UARTPins(void)
+{
+    /* PTA3 is configured as LPUART_0 TX */
+    const siul2_pin_settings_t BOARD_INITRS485UARTPINS_PTA3 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 3u,
+        .mux                         = kPORT_MUX_ALT6,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_DISABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_ENABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITRS485UARTPINS_PTA3);
+
+    /* PTA2 is configured as LPUART_0 RX */
+    const siul2_pin_settings_t BOARD_INITRS485UARTPINS_PTA2 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 2u,
+        .mux                         = kPORT_MUX_AS_GPIO,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_ENABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_DISABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .inputMuxReg                 = {
+                                         187u
+                                       },
+        .inputMux                    = {
+                                         kPORT_INPUT_MUX_ALT1,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT
+                                       },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITRS485UARTPINS_PTA2);
+
+    /* PTD2 is configured as LPUART_3 TX */
+    const siul2_pin_settings_t BOARD_INITRS485UARTPINS_PTD2 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 98u,
+        .mux                         = kPORT_MUX_ALT6,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_DISABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_ENABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITRS485UARTPINS_PTD2);
+
+    /* PTD3 is configured as LPUART_3 RX */
+    const siul2_pin_settings_t BOARD_INITRS485UARTPINS_PTD3 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 99u,
+        .mux                         = kPORT_MUX_AS_GPIO,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_ENABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_DISABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .inputMuxReg                 = {
+                                         190u
+                                       },
+        .inputMux                    = {
+                                         kPORT_INPUT_MUX_ALT3,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT
+                                       },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITRS485UARTPINS_PTD3);
+}
+
+/* clang-format off */
+/*
+ * TEXT BELOW IS USED AS SETTING FOR TOOLS *************************************
 BOARD_InitMIKROEUARTPins:
 - options: {callFromInitBoot: 'false', coreID: core0, enableClock: 'false'}
 - pin_list:

@@ -17,6 +17,7 @@ void BOARD_InitHardware(void)
     BOARD_InitFlexCANPins();
     BOARD_InitEMACPins();
     BOARD_InitMIKROEUARTPins();
+    BOARD_InitRS485UARTPins();
     BOARD_InitBootClocks();
     BOARD_InitDebugConsole();
 

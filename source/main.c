@@ -51,6 +51,7 @@
 #include "fsl_flexcan.h"
 #include "board.h"
 #include "uart2.h"
+#include "uart_smoke.h"
 
 /*******************************************************************************
  * Types
@@ -361,7 +362,9 @@ int main(void)
         can_start_rx(&g_can[i]);
         PRINTF("[CAN%d] ready\r\n", i);
     }
+
     uart2_init();
+    uart_smoke_init_all();
     PRINTF("\r\n");
 
     while (1)
@@ -376,6 +379,8 @@ int main(void)
             if (ch->rxDone)
                 can_handle_rx(ch);
         }
+
         uart2_poll(g_ms);
+        uart_smoke_poll_all(g_ms);
     }
 }
