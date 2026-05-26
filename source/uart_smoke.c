@@ -136,7 +136,7 @@ static void uart_smoke_poll_one(uart_smoke_channel_t *channel, uint32_t ms)
         channel->rxTail = (uint16_t)((channel->rxTail + 1U) % UART_SMOKE_RX_RING_SIZE);
 
         LPUART_WriteBlocking(channel->base, &byte, 1U);
-        PRINTF("[%s] RX: 0x%02X '%c'\r\n",
+        PRINTF("[%s] RX: 0x%x '%c'\r\n",
                channel->name,
                byte,
                (byte >= 0x20U && byte < 0x7FU) ? (char)byte : '.');

@@ -1,47 +1,36 @@
 /*
- * main.c — 3x FlexCAN Demo for MCXE31B (enet2can)
+ * main.c - 6x FlexCAN Demo for MCXE31B (enet2can)
  *
  * Each CAN channel independently:
  *   - Transmits a counter frame every 1 s
  *   - Receives all standard data frames (except own TX) and logs them
- *   - CAN FD mode configurable per channel
+ *   - Uses Classic CAN mode by default on all channels
  *
  * Pin assignment (see board/pin_mux.c):
  *   CAN0: FLEXCAN_0  TX=PTA7   RX=PTA6
  *   CAN1: FLEXCAN_1  TX=PTA11  RX=PTA12
  *   CAN2: FLEXCAN_2  TX=PTE24  RX=PTE25
+ *   CAN3: FLEXCAN_3  TX=PTC28  RX=PTC29
+ *   CAN4: FLEXCAN_4  TX=PTC30  RX=PTC31
+ *   CAN5: FLEXCAN_5  TX=PTC27  RX=PTC26
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*******************************************************************************
- * Channel Configuration — Edit here to change CAN parameters
+ * Channel Configuration - Edit here to change CAN parameters
  ******************************************************************************/
-
-/* CAN0 — FLEXCAN_0  TX=PTA7  RX=PTA6 */
-#define CAN0_TX_ID          0x100U
-#define CAN0_BITRATE        500000U
-#define CAN0_USE_CANFD      0
-#define CAN0_FD_BITRATE     2000000U
-
-/* CAN1 — FLEXCAN_1  TX=PTA11  RX=PTA12 */
-#define CAN1_TX_ID          0x101U
-#define CAN1_BITRATE        500000U
-#define CAN1_USE_CANFD      0
-#define CAN1_FD_BITRATE     2000000U
-
-/* CAN2 — FLEXCAN_2  TX=PTE24  RX=PTE25 */
-#define CAN2_TX_ID          0x102U
-#define CAN2_BITRATE        500000U
-#define CAN2_USE_CANFD      0
-#define CAN2_FD_BITRATE     2000000U
-
-/* Common */
-#define TX_PERIOD_MS        1000U               /* All channels: 1 s TX interval */
-#define TX_MB_IDX           0
-#define RX_MB_IDX           1
-#define FD_PAYLOAD_SIZE     kFLEXCAN_64BperMB
-#define FD_DLC              15                  /* DLC=15 → 64 bytes */
+#define CAN_CHANNEL_COUNT       6U
+#define CAN_TX_ID_BASE          0x100U
+#define CAN_BITRATE             500000U
+#define CAN_USE_CANFD           0
+#define CAN_FD_BITRATE          2000000U
+#define TX_PERIOD_MS            1000U
+#define TX_TIMEOUT_MS           200U
+#define TX_MB_IDX               0
+#define RX_MB_IDX               1
+#define FD_PAYLOAD_SIZE         kFLEXCAN_64BperMB
+#define FD_DLC                  15              /* DLC=15 means 64 bytes */
 
 /*******************************************************************************
  * Includes
@@ -49,6 +38,7 @@
 #include <string.h>
 #include "fsl_debug_console.h"
 #include "fsl_flexcan.h"
+#include "fsl_clock.h"
 #include "board.h"
 #include "uart2.h"
 #include "uart_smoke.h"
@@ -56,6 +46,13 @@
 /*******************************************************************************
  * Types
  ******************************************************************************/
+typedef struct
+{
+    CAN_Type    *base;
+    clock_name_t clkName;
+    uint32_t     txId;
+} can_ch_config_t;
+
 typedef struct
 {
     CAN_Type *base;
@@ -71,6 +68,7 @@ typedef struct
     volatile bool    rxDone;
     uint32_t         txCounter;
     uint32_t         lastTxMs;
+    uint32_t         txStartMs;
 
     union
     {
@@ -83,10 +81,20 @@ typedef struct
  * Globals
  ******************************************************************************/
 static volatile uint32_t g_ms;
-static can_ch_t          g_can[3];
+static can_ch_t          g_can[CAN_CHANNEL_COUNT];
+
+static const can_ch_config_t s_canConfig[CAN_CHANNEL_COUNT] =
+{
+    { FLEXCAN_0, kCLOCK_Flexcan0Clk, CAN_TX_ID_BASE + 0U },
+    { FLEXCAN_1, kCLOCK_Flexcan1Clk, CAN_TX_ID_BASE + 1U },
+    { FLEXCAN_2, kCLOCK_Flexcan2Clk, CAN_TX_ID_BASE + 2U },
+    { FLEXCAN_3, kCLOCK_Flexcan3Clk, CAN_TX_ID_BASE + 3U },
+    { FLEXCAN_4, kCLOCK_Flexcan4Clk, CAN_TX_ID_BASE + 4U },
+    { FLEXCAN_5, kCLOCK_Flexcan5Clk, CAN_TX_ID_BASE + 5U }
+};
 
 /*******************************************************************************
- * SysTick — 1 ms timebase
+ * SysTick - 1 ms timebase
  ******************************************************************************/
 void SysTick_Handler(void)
 {
@@ -94,7 +102,7 @@ void SysTick_Handler(void)
 }
 
 /*******************************************************************************
- * FlexCAN callback — shared by all 3 channels, routed via userData
+ * FlexCAN callback - shared by all channels, routed via userData
  ******************************************************************************/
 static FLEXCAN_CALLBACK(can_callback)
 {
@@ -149,7 +157,7 @@ static void can_init(can_ch_t *ch)
 
     FLEXCAN_TransferCreateHandle(ch->base, &ch->handle, can_callback, ch);
 
-    /* Accept ALL standard data frames — mask = 0 means no bits need to match */
+    /* Accept ALL standard data frames. Mask = 0 means no bits need to match. */
     FLEXCAN_SetRxMbGlobalMask(ch->base, 0U);
 
     mbRxCfg.format = kFLEXCAN_FrameFormatStandard;
@@ -194,11 +202,22 @@ static void can_start_rx(can_ch_t *ch)
 static void can_send_periodic(can_ch_t *ch)
 {
     flexcan_mb_transfer_t xfer;
-
-    ch->lastTxMs = g_ms;
+    status_t              status;
 
     if (!ch->txDone)
-        return; /* Previous TX still pending */
+    {
+        if ((g_ms - ch->txStartMs) >= TX_TIMEOUT_MS)
+        {
+            if (ch->useFD)
+                FLEXCAN_TransferFDAbortSend(ch->base, &ch->handle, TX_MB_IDX);
+            else
+                FLEXCAN_TransferAbortSend(ch->base, &ch->handle, TX_MB_IDX);
+
+            ch->txDone = true;
+            PRINTF("[CAN%d] TX timeout, abort pending frame\r\n", ch->idx);
+        }
+        return;
+    }
 
     memset(&ch->txFrame, 0, sizeof(ch->txFrame));
 
@@ -226,19 +245,29 @@ static void can_send_periodic(can_ch_t *ch)
     }
 
     ch->txDone = false;
+    ch->txStartMs = g_ms;
 
     if (ch->useFD)
-        (void)FLEXCAN_TransferFDSendNonBlocking(ch->base, &ch->handle, &xfer);
+        status = FLEXCAN_TransferFDSendNonBlocking(ch->base, &ch->handle, &xfer);
     else
-        (void)FLEXCAN_TransferSendNonBlocking(ch->base, &ch->handle, &xfer);
+        status = FLEXCAN_TransferSendNonBlocking(ch->base, &ch->handle, &xfer);
 
-    PRINTF("[CAN%d] TX  id=0x%03x  data=0x%08x\r\n",
+    if (status != kStatus_Success)
+    {
+        ch->txDone = true;
+        PRINTF("[CAN%d] TX start failed, status=%d\r\n", ch->idx, (int)status);
+        return;
+    }
+
+    ch->lastTxMs = g_ms;
+
+    PRINTF("[CAN%d] TX start  id=0x%x  data=0x%x\r\n",
            ch->idx, ch->txId, ch->txCounter);
     ch->txCounter++;
 }
 
 /*******************************************************************************
- * Helper: CAN FD DLC → actual byte length
+ * Helper: CAN FD DLC to actual byte length
  ******************************************************************************/
 static uint8_t dlc_to_len(uint8_t dlc)
 {
@@ -254,11 +283,11 @@ static uint8_t dlc_to_len(uint8_t dlc)
 static void print_frame_bytes(const uint32_t *words, uint8_t byteLen)
 {
     for (uint8_t i = 0; i < byteLen; i++)
-        PRINTF("%02X ", (unsigned)((words[i >> 2] >> (24U - 8U * (i & 3U))) & 0xFFU));
+        PRINTF("%x ", (unsigned)((words[i >> 2] >> (24U - 8U * (i & 3U))) & 0xFFU));
 }
 
 /*******************************************************************************
- * Handle a received frame — log it and re-arm RX
+ * Handle a received frame, log it, and re-arm RX
  ******************************************************************************/
 static void can_handle_rx(can_ch_t *ch)
 {
@@ -282,7 +311,7 @@ static void can_handle_rx(can_ch_t *ch)
         rxTs    = ch->rxFrame.classic.timestamp;
     }
 
-    PRINTF("[CAN%d] RX  id=0x%03x  len=%-2u  data: ", ch->idx, rxId, rxLen);
+    PRINTF("[CAN%d] RX  id=0x%x  len=%u  data: ", ch->idx, rxId, rxLen);
     print_frame_bytes(rxWords, rxLen);
     PRINTF(" ts=%u\r\n", rxTs);
 
@@ -295,32 +324,17 @@ static void can_handle_rx(can_ch_t *ch)
  ******************************************************************************/
 static void can_setup(void)
 {
-    g_can[0].base    = FLEXCAN_0;
-    g_can[0].clkFreq = CLOCK_GetFreq(kCLOCK_Flexcan0Clk);
-    g_can[0].bitRate = CAN0_BITRATE;
-    g_can[0].useFD   = (bool)CAN0_USE_CANFD;
-    g_can[0].bitRateFD = CAN0_FD_BITRATE;
-    g_can[0].txId    = CAN0_TX_ID;
-    g_can[0].txDone  = true;
-    g_can[0].idx     = 0U;
-
-    g_can[1].base    = FLEXCAN_1;
-    g_can[1].clkFreq = CLOCK_GetFreq(kCLOCK_Flexcan1Clk);
-    g_can[1].bitRate = CAN1_BITRATE;
-    g_can[1].useFD   = (bool)CAN1_USE_CANFD;
-    g_can[1].bitRateFD = CAN1_FD_BITRATE;
-    g_can[1].txId    = CAN1_TX_ID;
-    g_can[1].txDone  = true;
-    g_can[1].idx     = 1U;
-
-    g_can[2].base    = FLEXCAN_2;
-    g_can[2].clkFreq = CLOCK_GetFreq(kCLOCK_Flexcan2Clk);
-    g_can[2].bitRate = CAN2_BITRATE;
-    g_can[2].useFD   = (bool)CAN2_USE_CANFD;
-    g_can[2].bitRateFD = CAN2_FD_BITRATE;
-    g_can[2].txId    = CAN2_TX_ID;
-    g_can[2].txDone  = true;
-    g_can[2].idx     = 2U;
+    for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
+    {
+        g_can[i].base      = s_canConfig[i].base;
+        g_can[i].clkFreq   = CLOCK_GetFreq(s_canConfig[i].clkName);
+        g_can[i].bitRate   = CAN_BITRATE;
+        g_can[i].useFD     = (bool)CAN_USE_CANFD;
+        g_can[i].bitRateFD = CAN_FD_BITRATE;
+        g_can[i].txId      = s_canConfig[i].txId;
+        g_can[i].txDone    = true;
+        g_can[i].idx       = i;
+    }
 }
 
 /*******************************************************************************
@@ -334,29 +348,29 @@ int main(void)
     can_setup(); /* must run before reading g_can[] for startup print */
 
     PRINTF("\r\n========================================\r\n");
-    PRINTF("  3x FlexCAN Demo  —  MCXE31B\r\n");
+    PRINTF("  6x FlexCAN Demo  -  MCXE31B\r\n");
     PRINTF("========================================\r\n");
-    for (int i = 0; i < 3; i++)
+    for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
     {
         can_ch_t *ch = &g_can[i];
         if (ch->useFD)
-            PRINTF("  CAN%d: %lukbps (arb) / %lukbps (data)  CAN FD  TX=0x%03x  period=%ums\r\n",
+            PRINTF("  CAN%d: %ukbps (arb) / %ukbps (data)  CAN FD  TX=0x%x  period=%ums\r\n",
                    i,
-                   (unsigned long)(ch->bitRate   / 1000U),
-                   (unsigned long)(ch->bitRateFD / 1000U),
+                   (unsigned)(ch->bitRate   / 1000U),
+                   (unsigned)(ch->bitRateFD / 1000U),
                    (unsigned)ch->txId,
                    TX_PERIOD_MS);
         else
-            PRINTF("  CAN%d: %lukbps  Classic CAN  TX=0x%03x  period=%ums\r\n",
+            PRINTF("  CAN%d: %ukbps  Classic CAN  TX=0x%x  period=%ums\r\n",
                    i,
-                   (unsigned long)(ch->bitRate / 1000U),
+                   (unsigned)(ch->bitRate / 1000U),
                    (unsigned)ch->txId,
                    TX_PERIOD_MS);
     }
     PRINTF("  RX: all standard frames\r\n");
     PRINTF("========================================\r\n\r\n");
 
-    for (int i = 0; i < 3; i++)
+    for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
     {
         can_init(&g_can[i]);
         can_start_rx(&g_can[i]);
@@ -369,7 +383,7 @@ int main(void)
 
     while (1)
     {
-        for (int i = 0; i < 3; i++)
+        for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
         {
             can_ch_t *ch = &g_can[i];
 

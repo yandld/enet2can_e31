@@ -262,6 +262,16 @@ BOARD_InitFlexCANPins:
 - pin_list:
   - {pin_num: '100', peripheral: FLEXCAN_0, signal: TX, pin_signal: PTA7}
   - {pin_num: '102', peripheral: FLEXCAN_0, signal: RX, pin_signal: PTA6}
+  - {pin_num: '160', peripheral: FLEXCAN_1, signal: TX, pin_signal: PTA11}
+  - {pin_num: '159', peripheral: FLEXCAN_1, signal: RX, pin_signal: PTA12}
+  - {pin_num: '157', peripheral: FLEXCAN_2, signal: TX, pin_signal: PTE24}
+  - {pin_num: '158', peripheral: FLEXCAN_2, signal: RX, pin_signal: PTE25}
+  - {pin_num: '96', peripheral: FLEXCAN_3, signal: TX, pin_signal: PTC28}
+  - {pin_num: '99', peripheral: FLEXCAN_3, signal: RX, pin_signal: PTC29}
+  - {pin_num: '101', peripheral: FLEXCAN_4, signal: TX, pin_signal: PTC30}
+  - {pin_num: '103', peripheral: FLEXCAN_4, signal: RX, pin_signal: PTC31}
+  - {pin_num: '93', peripheral: FLEXCAN_5, signal: TX, pin_signal: PTC27}
+  - {pin_num: '91', peripheral: FLEXCAN_5, signal: RX, pin_signal: PTC26}
  * BE CAREFUL MODIFYING THIS COMMENT - IT IS YAML SETTINGS FOR TOOLS ***********
  */
 /* clang-format on */
@@ -338,7 +348,7 @@ void BOARD_InitFlexCANPins(void)
     
     
     
-    /* PTA11 (pin 98) is configured as FLEXCAN_1 TX */
+    /* PTA11 (pin 160) is configured as FLEXCAN_1 TX */
     const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTA11 =
     {
         .base                        = SIUL2,
@@ -359,7 +369,7 @@ void BOARD_InitFlexCANPins(void)
     SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTA11);
 
 
-    /* PTA12 (pin 96) is configured as FLEXCAN_1 RX */
+    /* PTA12 (pin 159) is configured as FLEXCAN_1 RX */
     const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTA12 =
     {
         .base                        = SIUL2,
@@ -403,7 +413,7 @@ void BOARD_InitFlexCANPins(void)
     
     
     
-    /* PTE24 (pin XX) is configured as FLEXCAN_2 TX */
+    /* PTE24 (pin 157) is configured as FLEXCAN_2 TX */
     const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTE24 =
     {
         .base                        = SIUL2,
@@ -424,7 +434,7 @@ void BOARD_InitFlexCANPins(void)
     SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTE24);
 
 
-    /* PTE25 (pin XX) is configured as FLEXCAN_2 RX */
+    /* PTE25 (pin 158) is configured as FLEXCAN_2 RX */
     const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTE25 =
     {
         .base                        = SIUL2,
@@ -464,6 +474,194 @@ void BOARD_InitFlexCANPins(void)
         .initValue                   = 2u
     };
     SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTE25);
+
+    /* PTC28 (pin 96) is configured as FLEXCAN_3 TX */
+    const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTC28 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 92,
+        .mux                         = kPORT_MUX_ALT1,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_DISABLED,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_DISABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_ENABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTC28);
+
+
+    /* PTC29 (pin 99) is configured as FLEXCAN_3 RX */
+    const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTC29 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 93,
+        .mux                         = kPORT_MUX_AS_GPIO,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_ENABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_DISABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .inputMuxReg                 = {
+                                         515-512
+                                       },
+        .inputMux                    = {
+                                         kPORT_INPUT_MUX_ALT3,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT
+                                       },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTC29);
+
+
+    /* PTC30 (pin 101) is configured as FLEXCAN_4 TX */
+    const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTC30 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 94,
+        .mux                         = kPORT_MUX_ALT1,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_DISABLED,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_DISABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_ENABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTC30);
+
+
+    /* PTC31 (pin 103) is configured as FLEXCAN_4 RX */
+    const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTC31 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 95,
+        .mux                         = kPORT_MUX_AS_GPIO,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_ENABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_DISABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .inputMuxReg                 = {
+                                         516-512
+                                       },
+        .inputMux                    = {
+                                         kPORT_INPUT_MUX_ALT3,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT
+                                       },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTC31);
+
+
+    /* PTC27 (pin 93) is configured as FLEXCAN_5 TX */
+    const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTC27 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 91,
+        .mux                         = kPORT_MUX_ALT1,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_DISABLED,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_DISABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_ENABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTC27);
+
+
+    /* PTC26 (pin 91) is configured as FLEXCAN_5 RX */
+    const siul2_pin_settings_t BOARD_INITFLEXCANPINS_PTC26 =
+    {
+        .base                        = SIUL2,
+        .pinPortIdx                  = 90,
+        .mux                         = kPORT_MUX_AS_GPIO,
+        .safeMode                    = kPORT_SAFE_MODE_DISABLED,
+        .inputFilter                 = kPORT_INPUT_FILTER_NOT_AVAILABLE,
+        .driveStrength               = kPORT_DRIVE_STRENTGTH_NOT_AVAILABLE,
+        .pullConfig                  = kPORT_INTERNAL_PULL_NOT_ENABLED,
+        .slewRateCtrlSel             = kPORT_SLEW_RATE_NOT_AVAILABLE,
+        .pullKeep                    = kPORT_PULL_KEEP_DISABLED,
+        .invert                      = kPORT_INVERT_DISABLED,
+        .inputBuffer                 = kPORT_INPUT_BUFFER_ENABLED,
+        .outputBuffer                = kPORT_OUTPUT_BUFFER_DISABLED,
+        .adcInterleaves              = { kMUX_MODE_NOT_AVAILABLE, kMUX_MODE_NOT_AVAILABLE },
+        .inputMuxReg                 = {
+                                         517-512
+                                       },
+        .inputMux                    = {
+                                         kPORT_INPUT_MUX_ALT5,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT,
+                                         kPORT_INPUT_MUX_NO_INIT
+                                       },
+        .initValue                   = 2u
+    };
+    SIUL2_PinInit(&BOARD_INITFLEXCANPINS_PTC26);
     
 }
 

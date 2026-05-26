@@ -88,7 +88,7 @@ void uart2_poll(uint32_t ms)
         uint8_t byte = s_rxBuf[s_rxTail];
         s_rxTail = (uint16_t)((s_rxTail + 1U) % UART2_RX_RING_SIZE);
         LPUART_WriteBlocking(LPUART_2, &byte, 1U);
-        PRINTF("[UART2] RX: 0x%02X '%c'\r\n",
+        PRINTF("[UART2] RX: 0x%x '%c'\r\n",
                byte,
                (byte >= 0x20U && byte < 0x7FU) ? (char)byte : '.');
     }
