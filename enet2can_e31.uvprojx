@@ -340,7 +340,7 @@
               <MiscControls>-include source/mcux_config.h -include source/mcuxsdk_version.h -fno-common -fdata-sections -fno-builtin -mthumb</MiscControls>
               <Define>DEBUG, FLEXCAN_WAIT_TIMEOUT=1000, SDK_DEBUGCONSOLE=1, MCUX_META_BUILD, MCUXPRESSO_SDK, CPU_MCXE31BMPB, MCXE31B_SERIES, BOOT_HEADER_ENABLE=1</Define>
               <Undefine></Undefine>
-              <IncludePath>board;source;CMSIS;CMSIS/m-profile;boot_header;component/uart;device;device/periph1;drivers;utilities;utilities/debug_console_lite;utilities/str</IncludePath>
+              <IncludePath>board;source;CMSIS;CMSIS/m-profile;boot_header;component/uart;component/phy;component/phy/device/phylan8741;component/silicon_id;component/silicon_id/socs;component/silicon_id/socs/mcxe31x;device;device/periph1;drivers;middleware/lwip/port;middleware/lwip/src/include;middleware/lwip/port/sys_arch/dynamic;utilities;utilities/debug_console_lite;utilities/str</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -358,7 +358,7 @@
               <MiscControls></MiscControls>
               <Define>MCUXPRESSO_SDK, CPU_MCXE31BMPB, MCXE31B_SERIES</Define>
               <Undefine></Undefine>
-              <IncludePath>source;CMSIS;CMSIS/m-profile;boot_header;component/uart;device;device/periph1;drivers;utilities;utilities/debug_console_lite;utilities/str</IncludePath>
+              <IncludePath>source;CMSIS;CMSIS/m-profile;boot_header;component/uart;component/phy;component/phy/device/phylan8741;component/silicon_id;component/silicon_id/socs;component/silicon_id/socs/mcxe31x;device;device/periph1;drivers;middleware/lwip/port;middleware/lwip/src/include;middleware/lwip/port/sys_arch/dynamic;utilities;utilities/debug_console_lite;utilities/str</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>
@@ -881,6 +881,16 @@
               <FilePath>drivers/fsl_common_arm.h</FilePath>
             </File>
             <File>
+              <FileName>fsl_enet_qos.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>drivers/fsl_enet_qos.c</FilePath>
+            </File>
+            <File>
+              <FileName>fsl_enet_qos.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>drivers/fsl_enet_qos.h</FilePath>
+            </File>
+            <File>
               <FileName>fsl_flexcan.c</FileName>
               <FileType>1</FileType>
               <FilePath>drivers/fsl_flexcan.c</FilePath>
@@ -921,9 +931,264 @@
           <GroupName>source</GroupName>
           <Files>
             <File>
+              <FileName>can_gateway_protocol.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/can_gateway_protocol.h</FilePath>
+            </File>
+            <File>
+              <FileName>ethernet_lwip.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>source/ethernet_lwip.c</FilePath>
+            </File>
+            <File>
+              <FileName>ethernet_lwip.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/ethernet_lwip.h</FilePath>
+            </File>
+            <File>
+              <FileName>lwipopts.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/lwipopts.h</FilePath>
+            </File>
+            <File>
+              <FileName>lwipopts_gen.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/lwipopts_gen.h</FilePath>
+            </File>
+            <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\source\main.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>component/silicon_id</GroupName>
+          <Files>
+            <File>
+              <FileName>fsl_silicon_id.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>component/silicon_id/fsl_silicon_id.c</FilePath>
+            </File>
+            <File>
+              <FileName>fsl_silicon_id.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>component/silicon_id/fsl_silicon_id.h</FilePath>
+            </File>
+            <File>
+              <FileName>fsl_silicon_id_soc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>component/silicon_id/socs/mcxe31x/fsl_silicon_id_soc.c</FilePath>
+            </File>
+            <File>
+              <FileName>fsl_silicon_id_soc.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>component/silicon_id/socs/fsl_silicon_id_soc.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>component/phy</GroupName>
+          <Files>
+            <File>
+              <FileName>fsl_phy.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>component/phy/fsl_phy.h</FilePath>
+            </File>
+            <File>
+              <FileName>fsl_phylan8741.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>component/phy/device/phylan8741/fsl_phylan8741.c</FilePath>
+            </File>
+            <File>
+              <FileName>fsl_phylan8741.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>component/phy/device/phylan8741/fsl_phylan8741.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>lwip/port</GroupName>
+          <Files>
+            <File>
+              <FileName>cc.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/arch/cc.h</FilePath>
+            </File>
+            <File>
+              <FileName>perf.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/arch/perf.h</FilePath>
+            </File>
+            <File>
+              <FileName>sys_arch.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/port/sys_arch/dynamic/sys_arch.c</FilePath>
+            </File>
+            <File>
+              <FileName>sys_arch.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/sys_arch/dynamic/arch/sys_arch.h</FilePath>
+            </File>
+            <File>
+              <FileName>ethernetif.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/port/ethernetif.c</FilePath>
+            </File>
+            <File>
+              <FileName>ethernetif.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/ethernetif.h</FilePath>
+            </File>
+            <File>
+              <FileName>ethernetif_mmac.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/port/ethernetif_mmac.c</FilePath>
+            </File>
+            <File>
+              <FileName>ethernetif_mmac.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/ethernetif_mmac.h</FilePath>
+            </File>
+            <File>
+              <FileName>ethernetif_priv.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/ethernetif_priv.h</FilePath>
+            </File>
+            <File>
+              <FileName>enet_configchecks.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>middleware/lwip/port/enet_configchecks.h</FilePath>
+            </File>
+            <File>
+              <FileName>enet_ethernetif_qos.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/port/enet_ethernetif_qos.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>lwip/src/core</GroupName>
+          <Files>
+            <File>
+              <FileName>def.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/def.c</FilePath>
+            </File>
+            <File>
+              <FileName>inet_chksum.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/inet_chksum.c</FilePath>
+            </File>
+            <File>
+              <FileName>init.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/init.c</FilePath>
+            </File>
+            <File>
+              <FileName>ip.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ip.c</FilePath>
+            </File>
+            <File>
+              <FileName>mem.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/mem.c</FilePath>
+            </File>
+            <File>
+              <FileName>memp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/memp.c</FilePath>
+            </File>
+            <File>
+              <FileName>netif.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/netif.c</FilePath>
+            </File>
+            <File>
+              <FileName>pbuf.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/pbuf.c</FilePath>
+            </File>
+            <File>
+              <FileName>stats.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/stats.c</FilePath>
+            </File>
+            <File>
+              <FileName>sys.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/sys.c</FilePath>
+            </File>
+            <File>
+              <FileName>tcp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/tcp.c</FilePath>
+            </File>
+            <File>
+              <FileName>tcp_in.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/tcp_in.c</FilePath>
+            </File>
+            <File>
+              <FileName>tcp_out.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/tcp_out.c</FilePath>
+            </File>
+            <File>
+              <FileName>timeouts.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/timeouts.c</FilePath>
+            </File>
+            <File>
+              <FileName>udp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/udp.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>lwip/src/core/ipv4</GroupName>
+          <Files>
+            <File>
+              <FileName>dhcp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ipv4/dhcp.c</FilePath>
+            </File>
+            <File>
+              <FileName>etharp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ipv4/etharp.c</FilePath>
+            </File>
+            <File>
+              <FileName>icmp.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ipv4/icmp.c</FilePath>
+            </File>
+            <File>
+              <FileName>ip4.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ipv4/ip4.c</FilePath>
+            </File>
+            <File>
+              <FileName>ip4_addr.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ipv4/ip4_addr.c</FilePath>
+            </File>
+            <File>
+              <FileName>ip4_frag.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/core/ipv4/ip4_frag.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>lwip/src/netif</GroupName>
+          <Files>
+            <File>
+              <FileName>ethernet.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>middleware/lwip/src/netif/ethernet.c</FilePath>
             </File>
           </Files>
         </Group>

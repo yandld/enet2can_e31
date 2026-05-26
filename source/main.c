@@ -42,7 +42,9 @@
 #include "fsl_flexcan.h"
 #include "fsl_clock.h"
 #include "board.h"
+#include "arch/sys_arch.h"
 #include "can_gateway_protocol.h"
+#include "ethernet_lwip.h"
 
 /*******************************************************************************
  * Types
@@ -108,6 +110,7 @@ static const can_ch_config_t s_canConfig[CAN_CHANNEL_COUNT] =
 void SysTick_Handler(void)
 {
     g_ms++;
+    time_isr();
 }
 
 /*******************************************************************************
@@ -420,6 +423,9 @@ int main(void)
            CAN_GATEWAY_UDP_STATUS_PORT);
     PRINTF("========================================\r\n\r\n");
 
+    (void)ethernet_lwip_init();
+    PRINTF("\r\n");
+
     for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
     {
         can_init(&g_can[i]);
@@ -431,6 +437,8 @@ int main(void)
 
     while (1)
     {
+        ethernet_lwip_poll();
+
         for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
         {
             can_ch_t *ch = &g_can[i];
