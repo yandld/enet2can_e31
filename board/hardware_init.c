@@ -16,18 +16,14 @@ void BOARD_InitHardware(void)
     BOARD_InitBootPins();
     BOARD_InitFlexCANPins();
     BOARD_InitEMACPins();
-    BOARD_InitMIKROEUARTPins();
-    BOARD_InitRS485UARTPins();
     BOARD_InitBootClocks();
     BOARD_InitDebugConsole();
 
     /*Clock setting for FLEXCAN*/
     CLOCK_SetClkDiv(kCLOCK_DivFlexcan012PeClk, 1U);
     CLOCK_AttachClk(kAIPS_PLAT_CLK_to_FLEXCAN012_PE);
-    
+
     CLOCK_SetClkDiv(kCLOCK_DivFlexcan345PeClk, 1U);
     CLOCK_AttachClk(kAIPS_PLAT_CLK_to_FLEXCAN345_PE);
-    
-    
 }
 /*${function:end}*/

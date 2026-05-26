@@ -89,18 +89,6 @@ void BOARD_InitFlexCANPins(void);
                                                                  /* @} */
 
 /*!
- * @brief LPUART2 MIKROE connector pins (PTE12=TX, PTD17=RX).
- *        TODO: fill in correct mux/IMCR values before use.
- */
-void BOARD_InitMIKROEUARTPins(void);
-
-/*!
- * @brief LPUART0/LPUART3 RS485 smoke-test pins.
- *
- */
-void BOARD_InitRS485UARTPins(void);
-
-/*!
  * @brief Configures pin routing and optionally pin electrical features.
  *
  */

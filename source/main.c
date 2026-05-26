@@ -1,10 +1,10 @@
 /*
- * main.c - 6x FlexCAN Demo for MCXE31B (enet2can)
+ * main.c - 6x CAN FD Bring-up for MCXE31B (enet2can)
  *
  * Each CAN channel independently:
  *   - Transmits a counter frame every 1 s
  *   - Receives all standard data frames (except own TX) and logs them
- *   - Uses Classic CAN mode by default on all channels
+ *   - Uses CAN FD mode by default on all channels
  *
  * Pin assignment (see board/pin_mux.c):
  *   CAN0: FLEXCAN_0  TX=PTA7   RX=PTA6
@@ -22,15 +22,17 @@
  ******************************************************************************/
 #define CAN_CHANNEL_COUNT       6U
 #define CAN_TX_ID_BASE          0x100U
-#define CAN_BITRATE             500000U
-#define CAN_USE_CANFD           0
-#define CAN_FD_BITRATE          2000000U
+#define CAN_BITRATE             1000000U
+#define CAN_USE_CANFD           1
+#define CAN_FD_BITRATE          5000000U
 #define TX_PERIOD_MS            1000U
 #define TX_TIMEOUT_MS           200U
+#define STATUS_PERIOD_MS        5000U
 #define TX_MB_IDX               0
 #define RX_MB_IDX               1
 #define FD_PAYLOAD_SIZE         kFLEXCAN_64BperMB
-#define FD_DLC                  15              /* DLC=15 means 64 bytes */
+#define CAN_CLASSIC_DLC         8U
+#define CAN_FD_DLC              15U             /* DLC=15 means 64 bytes */
 
 /*******************************************************************************
  * Includes
@@ -40,8 +42,7 @@
 #include "fsl_flexcan.h"
 #include "fsl_clock.h"
 #include "board.h"
-#include "uart2.h"
-#include "uart_smoke.h"
+#include "can_gateway_protocol.h"
 
 /*******************************************************************************
  * Types
@@ -69,6 +70,13 @@ typedef struct
     uint32_t         txCounter;
     uint32_t         lastTxMs;
     uint32_t         txStartMs;
+    uint32_t         rxCount;
+    uint32_t         txStartCount;
+    uint32_t         txDoneCount;
+    uint32_t         txErrorCount;
+    uint32_t         txTimeoutCount;
+    uint32_t         rxErrorCount;
+    uint32_t         lastErrorStatus;
 
     union
     {
@@ -81,6 +89,7 @@ typedef struct
  * Globals
  ******************************************************************************/
 static volatile uint32_t g_ms;
+static uint32_t          g_lastStatusMs;
 static can_ch_t          g_can[CAN_CHANNEL_COUNT];
 
 static const can_ch_config_t s_canConfig[CAN_CHANNEL_COUNT] =
@@ -113,7 +122,23 @@ static FLEXCAN_CALLBACK(can_callback)
             if (result == RX_MB_IDX) ch->rxDone = true;
             break;
         case kStatus_FLEXCAN_TxIdle:
-            if (result == TX_MB_IDX) ch->txDone = true;
+            if (result == TX_MB_IDX)
+            {
+                ch->txDone = true;
+                ch->txDoneCount++;
+            }
+            break;
+        case kStatus_FLEXCAN_RxOverflow:
+        case kStatus_FLEXCAN_RxFifoOverflow:
+            ch->rxErrorCount++;
+            ch->lastErrorStatus = result;
+            ch->rxDone = true;
+            break;
+        case kStatus_FLEXCAN_ErrorStatus:
+        case kStatus_FLEXCAN_MemoryError:
+        case kStatus_FLEXCAN_UnHandled:
+            ch->txErrorCount++;
+            ch->lastErrorStatus = result;
             break;
         default:
             break;
@@ -214,6 +239,8 @@ static void can_send_periodic(can_ch_t *ch)
                 FLEXCAN_TransferAbortSend(ch->base, &ch->handle, TX_MB_IDX);
 
             ch->txDone = true;
+            ch->txTimeoutCount++;
+            ch->txErrorCount++;
             PRINTF("[CAN%d] TX timeout, abort pending frame\r\n", ch->idx);
         }
         return;
@@ -226,7 +253,7 @@ static void can_send_periodic(can_ch_t *ch)
         ch->txFrame.fd.id          = FLEXCAN_ID_STD(ch->txId);
         ch->txFrame.fd.format      = (uint8_t)kFLEXCAN_FrameFormatStandard;
         ch->txFrame.fd.type        = (uint8_t)kFLEXCAN_FrameTypeData;
-        ch->txFrame.fd.length      = (uint8_t)FD_DLC;
+        ch->txFrame.fd.length      = (uint8_t)CAN_FD_DLC;
         ch->txFrame.fd.brs         = 1U;
         ch->txFrame.fd.edl         = 1U;
         ch->txFrame.fd.dataWord[0] = ch->txCounter;
@@ -238,7 +265,7 @@ static void can_send_periodic(can_ch_t *ch)
         ch->txFrame.classic.id        = FLEXCAN_ID_STD(ch->txId);
         ch->txFrame.classic.format    = (uint8_t)kFLEXCAN_FrameFormatStandard;
         ch->txFrame.classic.type      = (uint8_t)kFLEXCAN_FrameTypeData;
-        ch->txFrame.classic.length    = 8U;
+        ch->txFrame.classic.length    = CAN_CLASSIC_DLC;
         ch->txFrame.classic.dataWord0 = ch->txCounter;
         xfer.mbIdx = TX_MB_IDX;
         xfer.frame = &ch->txFrame.classic;
@@ -255,11 +282,13 @@ static void can_send_periodic(can_ch_t *ch)
     if (status != kStatus_Success)
     {
         ch->txDone = true;
+        ch->txErrorCount++;
         PRINTF("[CAN%d] TX start failed, status=%d\r\n", ch->idx, (int)status);
         return;
     }
 
     ch->lastTxMs = g_ms;
+    ch->txStartCount++;
 
     PRINTF("[CAN%d] TX start  id=0x%x  data=0x%x\r\n",
            ch->idx, ch->txId, ch->txCounter);
@@ -283,7 +312,7 @@ static uint8_t dlc_to_len(uint8_t dlc)
 static void print_frame_bytes(const uint32_t *words, uint8_t byteLen)
 {
     for (uint8_t i = 0; i < byteLen; i++)
-        PRINTF("%x ", (unsigned)((words[i >> 2] >> (24U - 8U * (i & 3U))) & 0xFFU));
+        PRINTF("%02x ", (unsigned)((words[i >> 2] >> (24U - 8U * (i & 3U))) & 0xFFU));
 }
 
 /*******************************************************************************
@@ -315,8 +344,25 @@ static void can_handle_rx(can_ch_t *ch)
     print_frame_bytes(rxWords, rxLen);
     PRINTF(" ts=%u\r\n", rxTs);
 
+    ch->rxCount++;
     ch->rxDone = false;
     can_start_rx(ch);
+}
+
+/*******************************************************************************
+ * Print low-rate channel counters for bring-up and stress-test capture
+ ******************************************************************************/
+static void can_print_status(const can_ch_t *ch)
+{
+    PRINTF("[CAN%d] status rx=%u tx_start=%u tx_done=%u tx_err=%u tx_timeout=%u rx_err=%u last=0x%x\r\n",
+           ch->idx,
+           (unsigned)ch->rxCount,
+           (unsigned)ch->txStartCount,
+           (unsigned)ch->txDoneCount,
+           (unsigned)ch->txErrorCount,
+           (unsigned)ch->txTimeoutCount,
+           (unsigned)ch->rxErrorCount,
+           (unsigned)ch->lastErrorStatus);
 }
 
 /*******************************************************************************
@@ -348,7 +394,7 @@ int main(void)
     can_setup(); /* must run before reading g_can[] for startup print */
 
     PRINTF("\r\n========================================\r\n");
-    PRINTF("  6x FlexCAN Demo  -  MCXE31B\r\n");
+    PRINTF("  6x CAN FD Bring-up  -  MCXE31B\r\n");
     PRINTF("========================================\r\n");
     for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
     {
@@ -368,6 +414,10 @@ int main(void)
                    TX_PERIOD_MS);
     }
     PRINTF("  RX: all standard frames\r\n");
+    PRINTF("  UDP gateway protocol: magic=0x%x data_port=%u status_port=%u\r\n",
+           (unsigned)CAN_GATEWAY_MAGIC,
+           CAN_GATEWAY_UDP_DATA_PORT,
+           CAN_GATEWAY_UDP_STATUS_PORT);
     PRINTF("========================================\r\n\r\n");
 
     for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
@@ -377,8 +427,6 @@ int main(void)
         PRINTF("[CAN%d] ready\r\n", i);
     }
 
-    uart2_init();
-    uart_smoke_init_all();
     PRINTF("\r\n");
 
     while (1)
@@ -394,7 +442,13 @@ int main(void)
                 can_handle_rx(ch);
         }
 
-        uart2_poll(g_ms);
-        uart_smoke_poll_all(g_ms);
+        if ((g_ms - g_lastStatusMs) >= STATUS_PERIOD_MS)
+        {
+            g_lastStatusMs = g_ms;
+            for (uint8_t i = 0U; i < CAN_CHANNEL_COUNT; i++)
+            {
+                can_print_status(&g_can[i]);
+            }
+        }
     }
 }
