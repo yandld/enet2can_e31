@@ -1,74 +1,77 @@
-HW
+# Local reference drops
+docs/HW/
+docs/SDK_reference/
 
-# Object files
+# Keil / MDK build output
+debug/
+Debug/
+Release/
+output/
+build/
+Objects/
+Listings/
+RTE/_Target_*/
+
 *.o
-*.ko
-*.o.*
-*.uvgui.*
-*.bat
-*.__i
-*.dbgdt
-*.tra
-*.iex
-*.sim
-*.sct
+*.d
+*.crf
+*.lst
+*.map
+*.htm
+*.lnp
+*.dep
+*.axf
+*.out
+*.hex
+*.bin
+*.elf
+*.srec
+*.sym
 *.pbd
-*.browse
-*.tmp
-*.ewt
-*.db
+*.scvd
+*.iex
+*.dbgdt
+*.__i
 *.__ia
+
+# Keil / debugger local state
+*.uvguix.*
+*.uvgui.*
+*.uvgui*
+*.uvoptx
+*.plg
+*.bak
+JLink*.ini
+*.tra
 *.dni
 *.wsdt
 *.pbi
-*.bin
-*.cout
-*.crf
-*.d
-*.htm
-*.map
-*.axf
-*.lnp
-*.scvd
-*.uvoptx
-*.txt
-*.xcl
 *.pbi.xcl
-*.ini
-*.Scr
-*.lst
-*.uvgui*
-output
-Doc
-settings
-Debug
-SI
-Release
-build
+*.browse
+*.tmp
+*.sim
 
-# Libraries
-*.a
+# IAR / embedded IDE local output
+settings/
+*.ewt
+*.xcl
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+# Python local cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Executables
-*.exe
-*.out
-*.app
-*.hex
-
-# Project files
-*.plg
-*.Yandld
-*.dep
-*.bak
-
-# Visual Studio Code
-*.vscode
+# Host and editor local state
+.vscode/
+.idea/
+*.code-workspace
+*.suo
+*.user
+*.db
+*.sqlite
 *.trae
 
 # Git worktrees

@@ -931,6 +931,36 @@
           <GroupName>source</GroupName>
           <Files>
             <File>
+              <FileName>can_service.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>source/can_service.c</FilePath>
+            </File>
+            <File>
+              <FileName>can_service.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/can_service.h</FilePath>
+            </File>
+            <File>
+              <FileName>gateway_router.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>source/gateway_router.c</FilePath>
+            </File>
+            <File>
+              <FileName>gateway_router.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/gateway_router.h</FilePath>
+            </File>
+            <File>
+              <FileName>can_udp_gateway.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>source/can_udp_gateway.c</FilePath>
+            </File>
+            <File>
+              <FileName>can_udp_gateway.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/can_udp_gateway.h</FilePath>
+            </File>
+            <File>
               <FileName>can_gateway_protocol.h</FileName>
               <FileType>5</FileType>
               <FilePath>source/can_gateway_protocol.h</FilePath>
