@@ -2,6 +2,22 @@
  * can_service.c - CAN service boundary for the six-channel gateway
  *
  * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Fully polled, no FlexCAN interrupts, and one identical RX mechanism on every
+ * channel: a bank of individual Rx message buffers scanned each poll. (CAN0's
+ * Enhanced Rx FIFO is intentionally NOT used so all six channels are configured
+ * identically and are easy to validate; only FlexCAN0 even has that FIFO.)
+ *   - RX: a bank of accept-all Rx message buffers. Individual Rx masking + queue
+ *     (MCR[IRMQ]) is ENABLED so the bank acts as a reception queue: a new frame is
+ *     stored in the next free mailbox instead of overwriting the lowest one.
+ *     Without IRMQ the lowest mailbox captures every frame and is overwritten in
+ *     place (effective depth 1); with IRMQ the depth equals the free mailbox count.
+ *     The bank is 5 deep on every channel (the 64-byte FD ceiling of the smallest
+ *     instances CAN3/4/5); the real burst depth must still be validated on the bench.
+ *   - TX: two mailboxes per channel (polled double-buffer); frames are written with
+ *     FLEXCAN_Write*TxMb and completion/timeout is detected by polling the IFLAG.
+ *   - Errors: bus state is polled every 10 ms and turned into SocketCAN error frames.
+ * Because there is no ISR, all queue/mailbox/error state is single-context.
  */
 
 #include "can_service.h"
@@ -13,15 +29,8 @@
 #include "fsl_flexcan.h"
 
 #define CAN_TX_ID_BASE 0x100U
-#define TX_PERIOD_MS 1000U
-#define TX_TIMEOUT_MS 200U
-#define STATUS_PERIOD_MS 5000U
-#define TX_MB_IDX 0
-#define RX_MB_IDX 1
+#define TX_TIMEOUT_MS 10U
 #define FD_PAYLOAD_SIZE kFLEXCAN_64BperMB
-#define CAN_SERVICE_ENABLE_PERIODIC_TX 0U
-#define CAN_SERVICE_ENABLE_PERIODIC_STATUS 0U
-#define CAN_SERVICE_ENABLE_RUNTIME_LOGS 0U
 #define CAN_SERVICE_ERROR_POLL_PERIOD_MS 10U
 #define CAN_ERROR_WARNING_THRESHOLD 96U
 #define CAN_MIN_NOMINAL_BITRATE 50000U
@@ -44,11 +53,16 @@ typedef struct
     CAN_Type *base;
     clock_name_t clkName;
     uint32_t txId;
+    uint8_t txMbFirst; /* first TX message buffer index */
+    uint8_t txMbCount; /* number of TX message buffers */
+    uint8_t rxMbFirst; /* first RX message buffer index */
+    uint8_t rxMbCount; /* RX message buffers in the bank */
 } can_channel_config_t;
 
 typedef struct
 {
     CAN_Type *base;
+    const can_channel_config_t *plan;
     uint32_t clkFreq;
     uint32_t bitRate;
     bool useFD;
@@ -57,18 +71,13 @@ typedef struct
     uint8_t index;
     can_service_config_t config;
 
-    flexcan_handle_t handle;
-    volatile bool txDone;
-    volatile bool rxDone;
-    volatile bool rxFifoDone;
-    volatile bool rxFifoRestartNeeded;
-    volatile bool errorFramePending;
-    volatile uint32_t pendingErrorCanId;
-    volatile uint8_t pendingErrorCtrl;
-    uint32_t txCounter;
-    uint32_t lastTxMs;
-    uint32_t txStartMs;
+    uint8_t txMbBusy[CAN_SERVICE_MAX_TX_MB];
+    uint32_t txStartMs[CAN_SERVICE_MAX_TX_MB];
     uint32_t lastErrorPollMs;
+
+    bool errorFramePending;
+    uint32_t pendingErrorCanId;
+    uint8_t pendingErrorCtrl;
 
     can_service_status_t status;
     can_gateway_frame_t rxRing[CAN_SERVICE_RX_RING_SIZE];
@@ -85,43 +94,54 @@ typedef struct
         flexcan_frame_t classic;
         flexcan_fd_frame_t fd;
     } txFrame, rxFrame;
-    flexcan_fifo_transfer_t rxFifoXfer;
-    flexcan_fd_frame_t rxFifoFrame[CAN_SERVICE_EFIFO_BATCH_SIZE];
 } can_channel_t;
 
 static volatile uint32_t s_ms;
-#if CAN_SERVICE_ENABLE_PERIODIC_STATUS
-static uint32_t s_lastStatusMs;
-#endif
 static bool s_initialized;
 static uint32_t s_activeMask;
 static uint32_t s_lastConfigStatus = CAN_SERVICE_CONFIG_OK;
 static can_channel_t s_can[CAN_SERVICE_CHANNEL_COUNT];
 
+/*
+ * Identical message-buffer plan on all six instances so every channel is configured
+ * and validated the same way and nothing depends on FlexCAN0-only features. The
+ * 64-byte FD payload packs only 7 mailboxes per 512-byte block, and the smallest
+ * instances (CAN3/4/5) have exactly one block, so 7 MBs is the common ceiling:
+ * 2 TX (idx 0..1) + 5 RX (idx 2..6) on every channel.
+ */
+#define CAN_TX_MB_COUNT 2U
+#define CAN_RX_MB_COUNT 5U
+/* 64-byte FD packs 7 MBs per 512-byte block; CAN3/4/5 have exactly one block. */
+#define CAN_FD_MB_PER_INSTANCE 7U
+
+_Static_assert((CAN_TX_MB_COUNT + CAN_RX_MB_COUNT) <= CAN_FD_MB_PER_INSTANCE,
+               "uniform FlexCAN MB plan exceeds the smallest instance's 64-byte FD capacity");
+_Static_assert(CAN_TX_MB_COUNT <= CAN_SERVICE_MAX_TX_MB,
+               "CAN_TX_MB_COUNT exceeds the per-channel TX bookkeeping array size");
+
 static const can_channel_config_t s_canConfig[CAN_SERVICE_CHANNEL_COUNT] =
 {
-    { FLEXCAN_0, kCLOCK_Flexcan0Clk, CAN_TX_ID_BASE + 0U },
-    { FLEXCAN_1, kCLOCK_Flexcan1Clk, CAN_TX_ID_BASE + 1U },
-    { FLEXCAN_2, kCLOCK_Flexcan2Clk, CAN_TX_ID_BASE + 2U },
-    { FLEXCAN_3, kCLOCK_Flexcan3Clk, CAN_TX_ID_BASE + 3U },
-    { FLEXCAN_4, kCLOCK_Flexcan4Clk, CAN_TX_ID_BASE + 4U },
-    { FLEXCAN_5, kCLOCK_Flexcan5Clk, CAN_TX_ID_BASE + 5U }
-};
-
-static uint32_t s_enhancedRxFifoFilterTable[] =
-{
-    FLEXCAN_ENHANCED_RX_FIFO_EXT_MASK_AND_FILTER_LOW(0U, 0U),
-    FLEXCAN_ENHANCED_RX_FIFO_EXT_MASK_AND_FILTER_HIGH(0U, 0U),
-    FLEXCAN_ENHANCED_RX_FIFO_STD_MASK_AND_FILTER(0U, 0U, 0U, 0U),
-    FLEXCAN_ENHANCED_RX_FIFO_STD_MASK_AND_FILTER(0U, 0U, 0U, 0U)
+    { FLEXCAN_0, kCLOCK_Flexcan0Clk, CAN_TX_ID_BASE + 0U, 0U, CAN_TX_MB_COUNT, CAN_TX_MB_COUNT, CAN_RX_MB_COUNT },
+    { FLEXCAN_1, kCLOCK_Flexcan1Clk, CAN_TX_ID_BASE + 1U, 0U, CAN_TX_MB_COUNT, CAN_TX_MB_COUNT, CAN_RX_MB_COUNT },
+    { FLEXCAN_2, kCLOCK_Flexcan2Clk, CAN_TX_ID_BASE + 2U, 0U, CAN_TX_MB_COUNT, CAN_TX_MB_COUNT, CAN_RX_MB_COUNT },
+    { FLEXCAN_3, kCLOCK_Flexcan3Clk, CAN_TX_ID_BASE + 3U, 0U, CAN_TX_MB_COUNT, CAN_TX_MB_COUNT, CAN_RX_MB_COUNT },
+    { FLEXCAN_4, kCLOCK_Flexcan4Clk, CAN_TX_ID_BASE + 4U, 0U, CAN_TX_MB_COUNT, CAN_TX_MB_COUNT, CAN_RX_MB_COUNT },
+    { FLEXCAN_5, kCLOCK_Flexcan5Clk, CAN_TX_ID_BASE + 5U, 0U, CAN_TX_MB_COUNT, CAN_TX_MB_COUNT, CAN_RX_MB_COUNT }
 };
 
 static void can_init_channel(can_channel_t *ch);
-static bool can_push_rx(can_channel_t *ch, const can_gateway_frame_t *frame);
+static bool can_push_rx(can_channel_t *ch, const can_gateway_frame_t *frame, bool isError);
 
 static uint8_t dlc_to_len(uint8_t dlc)
 {
     return (dlc <= CAN_FD_DLC) ? (uint8_t)DLC_LENGTH_DECODE(dlc) : CAN_GATEWAY_MAX_DATA_LEN;
+}
+
+static uint8_t channel_max_mb(const can_channel_config_t *plan)
+{
+    uint8_t txEnd = (uint8_t)(plan->txMbFirst + plan->txMbCount);
+    uint8_t rxEnd = (uint8_t)(plan->rxMbFirst + plan->rxMbCount);
+    return (rxEnd > txEnd) ? rxEnd : txEnd;
 }
 
 static void copy_words_to_bytes(uint8_t *bytes, const uint32_t *words, uint8_t byteLen)
@@ -152,16 +172,6 @@ static bool can_channel_enabled(uint8_t channel)
     return (channel < CAN_SERVICE_CHANNEL_COUNT) && ((s_activeMask & (1UL << channel)) != 0U);
 }
 
-static bool can_channel_use_enhanced_rx_fifo(const can_channel_t *ch)
-{
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO && defined(FSL_FEATURE_FLEXCAN_INSTANCE_HAS_ENHANCED_RX_FIFOn)
-    return ch->useFD && (FSL_FEATURE_FLEXCAN_INSTANCE_HAS_ENHANCED_RX_FIFOn(ch->base) == 1);
-#else
-    (void)ch;
-    return false;
-#endif
-}
-
 static can_service_config_t can_default_config(bool enabled)
 {
     can_service_config_t config;
@@ -190,14 +200,16 @@ static void can_reset_queues(can_channel_t *ch)
     ch->txQueued = 0U;
     ch->status.rxQueued = 0U;
     ch->status.txQueued = 0U;
-    ch->rxDone = false;
-    ch->rxFifoDone = false;
-    ch->rxFifoRestartNeeded = false;
     ch->errorFramePending = false;
     ch->pendingErrorCanId = 0U;
     ch->pendingErrorCtrl = 0U;
     ch->lastErrorPollMs = 0U;
-    ch->txDone = true;
+
+    for (uint8_t i = 0U; i < CAN_SERVICE_MAX_TX_MB; i++)
+    {
+        ch->txMbBusy[i] = 0U;
+        ch->txStartMs[i] = 0U;
+    }
 }
 
 static void can_sync_channel_from_config(can_channel_t *ch)
@@ -207,8 +219,15 @@ static void can_sync_channel_from_config(can_channel_t *ch)
     ch->bitRateFD = ch->config.useFD ? ch->config.bitRateFD : 0U;
     ch->status.enabled = ch->config.enabled;
     ch->status.useFD = ch->config.useFD;
+    ch->status.enhancedRxFifo = false; /* uniform Rx MB bank on every channel */
     ch->status.bitRate = ch->config.bitRate;
     ch->status.bitRateFD = ch->bitRateFD;
+    ch->status.rxCapacity = CAN_SERVICE_RX_RING_SIZE;
+    ch->status.txCapacity = CAN_SERVICE_TX_QUEUE_SIZE;
+    ch->status.rxDrainMax = CAN_SERVICE_RX_DRAIN_MAX;
+    ch->status.rxHwSlots = ch->plan->rxMbCount;
+    ch->status.txMbCount = ch->plan->txMbCount;
+    ch->status.rxMbCount = ch->plan->rxMbCount;
 }
 
 static uint32_t can_validate_config(uint8_t channel, const can_service_config_t *config)
@@ -261,26 +280,7 @@ static void can_deinit_channel(can_channel_t *ch)
         return;
     }
 
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (can_channel_use_enhanced_rx_fifo(ch))
-    {
-        FLEXCAN_TransferAbortReceiveEnhancedFifo(ch->base, &ch->handle);
-    }
-    else
-#endif
-    {
-        FLEXCAN_TransferAbortReceive(ch->base, &ch->handle, RX_MB_IDX);
-    }
-
-    if (ch->useFD)
-    {
-        FLEXCAN_TransferFDAbortSend(ch->base, &ch->handle, TX_MB_IDX);
-    }
-    else
-    {
-        FLEXCAN_TransferAbortSend(ch->base, &ch->handle, TX_MB_IDX);
-    }
-
+    /* No interrupts/transfers are armed; a full module reset aborts any pending TX. */
     FLEXCAN_Deinit(ch->base);
 }
 
@@ -288,6 +288,7 @@ static uint32_t can_apply_config(uint8_t channel, const can_service_config_t *co
 {
     can_channel_t *ch = &s_can[channel];
 
+    /* Single-context (no ISR): reconfiguration cannot race interrupt handlers. */
     if (s_initialized)
     {
         can_deinit_channel(ch);
@@ -328,43 +329,6 @@ static bool can_frame_matches_filter(const can_channel_t *ch, const can_gateway_
     }
 
     return ((frame->can_id & ch->config.filterMask) == (ch->config.filterId & ch->config.filterMask));
-}
-
-static void can_start_rx(can_channel_t *ch)
-{
-    flexcan_mb_transfer_t xfer;
-    status_t status;
-
-    ch->rxDone = false;
-
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (can_channel_use_enhanced_rx_fifo(ch))
-    {
-        ch->rxFifoDone = false;
-        ch->rxFifoXfer.framefd = &ch->rxFifoFrame[0];
-        ch->rxFifoXfer.frameNum = CAN_SERVICE_EFIFO_BATCH_SIZE;
-        status = FLEXCAN_TransferReceiveEnhancedFifoNonBlocking(ch->base, &ch->handle, &ch->rxFifoXfer);
-        if ((status != kStatus_Success) && (status != kStatus_FLEXCAN_RxFifoBusy))
-        {
-            ch->status.rxErrorCount++;
-            ch->status.lastErrorStatus = (uint32_t)status;
-        }
-        return;
-    }
-#endif
-
-    xfer.mbIdx = RX_MB_IDX;
-
-    if (ch->useFD)
-    {
-        xfer.framefd = &ch->rxFrame.fd;
-        (void)FLEXCAN_TransferFDReceiveNonBlocking(ch->base, &ch->handle, &xfer);
-    }
-    else
-    {
-        xfer.frame = &ch->rxFrame.classic;
-        (void)FLEXCAN_TransferReceiveNonBlocking(ch->base, &ch->handle, &xfer);
-    }
 }
 
 static uint8_t can_error_ctrl_bits(uint8_t txErr, uint8_t rxErr)
@@ -411,6 +375,7 @@ static void can_read_error_counters(can_channel_t *ch, uint8_t *txErr, uint8_t *
     }
 }
 
+/* Accumulate a pending SocketCAN error event (merged until flushed into the ring). */
 static void can_queue_error_event(can_channel_t *ch, uint32_t canId, uint8_t ctrl)
 {
     ch->pendingErrorCanId |= canId;
@@ -433,23 +398,18 @@ static bool can_push_error_frame(can_channel_t *ch, uint32_t canId, uint8_t ctrl
     frame.data[6] = ch->status.txErrCounter;
     frame.data[7] = ch->status.rxErrCounter;
 
-    return can_push_rx(ch, &frame);
+    return can_push_rx(ch, &frame, true);
 }
 
+/* Push the pending error event into the RX ring; keep it pending if the ring is full. */
 static void can_flush_pending_error_frame(can_channel_t *ch)
 {
-    uint32_t canId;
-    uint8_t ctrl;
-
     if (!ch->errorFramePending)
     {
         return;
     }
 
-    canId = ch->pendingErrorCanId;
-    ctrl = ch->pendingErrorCtrl;
-
-    if (can_push_error_frame(ch, canId, ctrl))
+    if (can_push_error_frame(ch, ch->pendingErrorCanId, ch->pendingErrorCtrl))
     {
         ch->pendingErrorCanId = 0U;
         ch->pendingErrorCtrl = 0U;
@@ -457,173 +417,79 @@ static void can_flush_pending_error_frame(can_channel_t *ch)
     }
 }
 
-static FLEXCAN_CALLBACK(can_callback)
-{
-    can_channel_t *ch = (can_channel_t *)userData;
-    uint8_t txErr = 0U;
-    uint8_t rxErr = 0U;
-    uint8_t ctrl;
-
-    switch (status)
-    {
-        case kStatus_FLEXCAN_RxIdle:
-            if (result == RX_MB_IDX)
-            {
-                ch->rxDone = true;
-            }
-            break;
-
-        case kStatus_FLEXCAN_RxFifoIdle:
-            ch->rxFifoDone = true;
-            ch->status.rxFifoIdleCount++;
-            break;
-
-        case kStatus_FLEXCAN_TxIdle:
-            if (result == TX_MB_IDX)
-            {
-                ch->txDone = true;
-                ch->status.txDoneCount++;
-            }
-            break;
-
-        case kStatus_FLEXCAN_RxOverflow:
-            ch->status.rxErrorCount++;
-            ch->status.lastErrorStatus = (uint32_t)result;
-            ch->rxDone = true;
-            can_queue_error_event(ch, CAN_ERR_CRTL, CAN_ERR_CRTL_RX_OVERFLOW);
-            break;
-
-        case kStatus_FLEXCAN_RxFifoOverflow:
-            ch->status.rxFifoOverflowCount++;
-            ch->status.rxErrorCount++;
-            ch->status.lastErrorStatus = (uint32_t)result;
-            ch->rxFifoRestartNeeded = true;
-            can_queue_error_event(ch, CAN_ERR_CRTL, CAN_ERR_CRTL_RX_OVERFLOW);
-            break;
-
-        case kStatus_FLEXCAN_RxFifoWarning:
-            ch->status.rxFifoWarningCount++;
-            ch->status.lastErrorStatus = (uint32_t)result;
-            break;
-
-        case kStatus_FLEXCAN_RxFifoUnderflow:
-            ch->status.rxFifoUnderflowCount++;
-            ch->status.rxErrorCount++;
-            ch->status.lastErrorStatus = (uint32_t)result;
-            ch->rxFifoRestartNeeded = true;
-            break;
-
-        case kStatus_FLEXCAN_ErrorStatus:
-            can_read_error_counters(ch, &txErr, &rxErr);
-            ctrl = can_error_ctrl_bits(txErr, rxErr);
-            if (((uint32_t)result & (uint32_t)kFLEXCAN_BusOffIntFlag) != 0U)
-            {
-                ch->status.busOffCount++;
-                can_queue_error_event(ch, CAN_ERR_BUSOFF | CAN_ERR_BUSERROR, ctrl);
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-                PRINTF("CAN%d: bus off flags=0x%x\r\n", ch->index, (unsigned)result);
-#endif
-            }
-            else
-            {
-                can_queue_error_event(ch, CAN_ERR_BUSERROR | CAN_ERR_CRTL, ctrl);
-            }
-            ch->status.txErrorCount++;
-            ch->status.lastErrorStatus = (uint32_t)result;
-            break;
-
-        case kStatus_FLEXCAN_MemoryError:
-        case kStatus_FLEXCAN_UnHandled:
-            ch->status.txErrorCount++;
-            ch->status.lastErrorStatus = (uint32_t)result;
-            break;
-
-        default:
-            break;
-    }
-}
-
 static void can_init_channel(can_channel_t *ch)
 {
     flexcan_config_t cfg;
     flexcan_rx_mb_config_t mbRxCfg;
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    flexcan_enhanced_rx_fifo_config_t fifoCfg;
-#endif
     flexcan_timing_config_t timing;
+    const can_channel_config_t *plan = ch->plan;
 
     FLEXCAN_GetDefaultConfig(&cfg);
     cfg.bitRate = ch->bitRate;
+    cfg.maxMbNum = channel_max_mb(plan);
     cfg.disableSelfReception = true;
+    cfg.enableIndividMask = true; /* MCR[IRMQ]=1: the Rx MB bank acts as a reception queue */
+
+    memset(&timing, 0, sizeof(timing));
 
     if (ch->useFD)
     {
         cfg.bitRateFD = ch->bitRateFD;
-        memset(&timing, 0, sizeof(timing));
-
         if (FLEXCAN_FDCalculateImprovedTimingValues(ch->base, cfg.bitRate, cfg.bitRateFD, ch->clkFreq, &timing))
         {
             memcpy(&cfg.timingConfig, &timing, sizeof(timing));
         }
-        else
-        {
-            PRINTF("CAN%d: warning FD timing calculation failed\r\n", ch->index);
-        }
-
         FLEXCAN_FDInit(ch->base, &cfg, ch->clkFreq, FD_PAYLOAD_SIZE, true);
     }
     else
     {
-        memset(&timing, 0, sizeof(timing));
-
         if (FLEXCAN_CalculateImprovedTimingValues(ch->base, cfg.bitRate, ch->clkFreq, &timing))
         {
             memcpy(&cfg.timingConfig, &timing, sizeof(timing));
         }
-        else
-        {
-            PRINTF("CAN%d: warning timing calculation failed\r\n", ch->index);
-        }
-
         FLEXCAN_Init(ch->base, &cfg, ch->clkFreq);
     }
 
-    FLEXCAN_TransferCreateHandle(ch->base, &ch->handle, can_callback, ch);
-    FLEXCAN_SetRxMbGlobalMask(ch->base, 0U);
+    /* No handle / no interrupts: everything is polled (see file header). With IRMQ
+     * enabled the per-mailbox individual mask (RXIMR) replaces the global mask, so
+     * each Rx mailbox is set accept-all below and the software filter applies on read. */
 
     mbRxCfg.format = kFLEXCAN_FrameFormatStandard;
     mbRxCfg.type = kFLEXCAN_FrameTypeData;
     mbRxCfg.id = FLEXCAN_ID_STD(0U);
 
-    if (ch->useFD)
+    /* TX message buffers. */
+    for (uint8_t i = 0U; i < plan->txMbCount; i++)
     {
-        FLEXCAN_SetFDTxMbConfig(ch->base, TX_MB_IDX, true);
+        uint8_t mbIdx = (uint8_t)(plan->txMbFirst + i);
 
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-        if (can_channel_use_enhanced_rx_fifo(ch))
+        if (ch->useFD)
         {
-            memset(&fifoCfg, 0, sizeof(fifoCfg));
-            fifoCfg.idFilterTable = s_enhancedRxFifoFilterTable;
-            fifoCfg.idFilterPairNum = 2U;
-            fifoCfg.extendIdFilterNum = 1U;
-            fifoCfg.fifoWatermark = CAN_SERVICE_EFIFO_WATERMARK;
-            fifoCfg.dmaPerReadLength = kFLEXCAN_19WordPerRead;
-            fifoCfg.priority = kFLEXCAN_RxFifoPrioHigh;
-            FLEXCAN_SetEnhancedRxFifoConfig(ch->base, &fifoCfg, true);
+            FLEXCAN_SetFDTxMbConfig(ch->base, mbIdx, true);
         }
         else
-#endif
         {
-            FLEXCAN_SetFDRxMbConfig(ch->base, RX_MB_IDX, &mbRxCfg, true);
+            FLEXCAN_SetTxMbConfig(ch->base, mbIdx, true);
         }
     }
-    else
-    {
-        FLEXCAN_SetRxMbConfig(ch->base, RX_MB_IDX, &mbRxCfg, true);
-        FLEXCAN_SetTxMbConfig(ch->base, TX_MB_IDX, true);
-    }
 
-    can_start_rx(ch);
+    /* RX message-buffer bank: accept-all individual mask + same id/format on every
+     * mailbox so the IRMQ reception queue stores each new frame in the next free one. */
+    for (uint8_t i = 0U; i < plan->rxMbCount; i++)
+    {
+        uint8_t mbIdx = (uint8_t)(plan->rxMbFirst + i);
+
+        FLEXCAN_SetRxIndividualMask(ch->base, mbIdx, 0U); /* accept-all (mask 0 = don't care) */
+
+        if (ch->useFD)
+        {
+            FLEXCAN_SetFDRxMbConfig(ch->base, mbIdx, &mbRxCfg, true);
+        }
+        else
+        {
+            FLEXCAN_SetRxMbConfig(ch->base, mbIdx, &mbRxCfg, true);
+        }
+    }
 }
 
 static bool can_validate_tx_frame(const can_channel_t *ch, const can_gateway_frame_t *frame)
@@ -673,94 +539,7 @@ static bool can_validate_tx_frame(const can_channel_t *ch, const can_gateway_fra
     return true;
 }
 
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-static const char *can_tx_reject_reason(const can_channel_t *ch, const can_gateway_frame_t *frame)
-{
-    uint8_t knownFlags = CAN_GATEWAY_FLAG_FD | CAN_GATEWAY_FLAG_BRS | CAN_GATEWAY_FLAG_EXTENDED_ID |
-                          CAN_GATEWAY_FLAG_REMOTE | CAN_GATEWAY_FLAG_ERROR;
-    bool isExtended;
-    bool isFD;
-    uint8_t dataLen;
-
-    if (ch == NULL)
-    {
-        return "channel-context";
-    }
-    if (frame == NULL)
-    {
-        return "null-frame";
-    }
-    if (frame->channel >= CAN_SERVICE_CHANNEL_COUNT)
-    {
-        return "channel";
-    }
-    if (frame->dlc > CAN_FD_DLC)
-    {
-        return "dlc";
-    }
-    if ((frame->flags & CAN_GATEWAY_FLAG_ERROR) != 0U)
-    {
-        return "error-frame";
-    }
-    if ((frame->flags & (uint8_t)~knownFlags) != 0U)
-    {
-        return "flags";
-    }
-
-    isExtended = ((frame->flags & CAN_GATEWAY_FLAG_EXTENDED_ID) != 0U);
-    isFD = ((frame->flags & CAN_GATEWAY_FLAG_FD) != 0U);
-    dataLen = dlc_to_len(frame->dlc);
-
-    if ((!isExtended && (frame->can_id > 0x7FFU)) || (isExtended && (frame->can_id > 0x1FFFFFFFUL)))
-    {
-        return "can-id";
-    }
-    if (!ch->useFD && isFD)
-    {
-        return "fd-disabled";
-    }
-    if (!isFD && (dataLen > CAN_CLASSIC_DLC))
-    {
-        return "classic-dlc";
-    }
-    if (isFD && ((frame->flags & CAN_GATEWAY_FLAG_REMOTE) != 0U))
-    {
-        return "fd-remote";
-    }
-    if (((frame->flags & CAN_GATEWAY_FLAG_BRS) != 0U) && !ch->config.brs)
-    {
-        return "brs-disabled";
-    }
-
-    return "unknown";
-}
-#endif
-
-static void can_log_tx_reject(const can_channel_t *ch, const can_gateway_frame_t *frame, const char *where)
-{
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-    uint8_t index = (ch != NULL) ? ch->index : 0xFFU;
-    uint8_t frameChannel = (frame != NULL) ? frame->channel : 0xFFU;
-    uint32_t canId = (frame != NULL) ? frame->can_id : 0U;
-    uint8_t flags = (frame != NULL) ? frame->flags : 0U;
-    uint8_t dlc = (frame != NULL) ? frame->dlc : 0U;
-
-    PRINTF("CAN%d: TX reject at %s ch=%u id=0x%x flags=0x%x dlc=%u reason=%s\r\n",
-           index,
-           where,
-           (unsigned)frameChannel,
-           (unsigned)canId,
-           (unsigned)flags,
-           (unsigned)dlc,
-           can_tx_reject_reason(ch, frame));
-#else
-    (void)ch;
-    (void)frame;
-    (void)where;
-#endif
-}
-
-static bool can_prepare_tx_frame(can_channel_t *ch, const can_gateway_frame_t *frame, flexcan_mb_transfer_t *xfer)
+static bool can_prepare_tx_frame(can_channel_t *ch, const can_gateway_frame_t *frame)
 {
     uint8_t dataLen = dlc_to_len(frame->dlc);
     bool isExtended = ((frame->flags & CAN_GATEWAY_FLAG_EXTENDED_ID) != 0U);
@@ -773,8 +552,6 @@ static bool can_prepare_tx_frame(can_channel_t *ch, const can_gateway_frame_t *f
 
     memset(&ch->txFrame, 0, sizeof(ch->txFrame));
 
-    xfer->mbIdx = TX_MB_IDX;
-
     if (ch->useFD)
     {
         ch->txFrame.fd.id = isExtended ? FLEXCAN_ID_EXT(frame->can_id) : FLEXCAN_ID_STD(frame->can_id);
@@ -785,7 +562,6 @@ static bool can_prepare_tx_frame(can_channel_t *ch, const can_gateway_frame_t *f
         ch->txFrame.fd.brs = (((frame->flags & CAN_GATEWAY_FLAG_BRS) != 0U) && ch->config.brs) ? 1U : 0U;
         ch->txFrame.fd.edl = isFD ? 1U : 0U;
         copy_bytes_to_words(ch->txFrame.fd.dataWord, frame->data, dataLen);
-        xfer->framefd = &ch->txFrame.fd;
     }
     else
     {
@@ -795,102 +571,71 @@ static bool can_prepare_tx_frame(can_channel_t *ch, const can_gateway_frame_t *f
                                    (uint8_t)kFLEXCAN_FrameTypeRemote : (uint8_t)kFLEXCAN_FrameTypeData;
         ch->txFrame.classic.length = dataLen;
         copy_bytes_to_words(&ch->txFrame.classic.dataWord0, frame->data, dataLen);
-        xfer->frame = &ch->txFrame.classic;
     }
 
     return true;
 }
 
-static uint32_t can_start_tx(can_channel_t *ch, const can_gateway_frame_t *frame)
+static int8_t can_find_free_tx_mb(const can_channel_t *ch)
 {
-    flexcan_mb_transfer_t xfer;
+    for (uint8_t i = 0U; i < ch->plan->txMbCount; i++)
+    {
+        if (ch->txMbBusy[i] == 0U)
+        {
+            return (int8_t)i;
+        }
+    }
+    return -1;
+}
+
+/* Write a queued TX frame into a free TX mailbox (polled, no interrupt). */
+static uint32_t can_start_tx(can_channel_t *ch, uint8_t localMb, const can_gateway_frame_t *frame)
+{
+    uint8_t mbIdx = (uint8_t)(ch->plan->txMbFirst + localMb);
     status_t status;
 
-    if (!ch->txDone)
-    {
-        ch->status.txBusyCount++;
-        return CAN_GATEWAY_STATUS_CAN_TX_BUSY;
-    }
-
-    if (!can_prepare_tx_frame(ch, frame, &xfer))
+    if (!can_prepare_tx_frame(ch, frame))
     {
         ch->status.txErrorCount++;
-        can_log_tx_reject(ch, frame, "start");
         return CAN_GATEWAY_STATUS_INVALID_PACKET;
     }
 
-    ch->txDone = false;
-    ch->txStartMs = s_ms;
-
     if (ch->useFD)
     {
-        status = FLEXCAN_TransferFDSendNonBlocking(ch->base, &ch->handle, &xfer);
+        status = FLEXCAN_WriteFDTxMb(ch->base, mbIdx, &ch->txFrame.fd);
     }
     else
     {
-        status = FLEXCAN_TransferSendNonBlocking(ch->base, &ch->handle, &xfer);
+        status = FLEXCAN_WriteTxMb(ch->base, mbIdx, &ch->txFrame.classic);
     }
 
     if (status != kStatus_Success)
     {
-        ch->txDone = true;
-        ch->status.txErrorCount++;
-        ch->status.lastErrorStatus = (uint32_t)status;
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-        PRINTF("CAN%d: TX start failed status=%d\r\n", ch->index, (int)status);
-#endif
-        return CAN_GATEWAY_STATUS_CAN_TX_ERROR;
+        /* Mailbox still transmitting a previous frame; retry next poll. */
+        ch->status.txBusyCount++;
+        return CAN_GATEWAY_STATUS_CAN_TX_BUSY;
     }
 
-    ch->lastTxMs = s_ms;
+    ch->txMbBusy[localMb] = 1U;
+    ch->txStartMs[localMb] = s_ms;
     ch->status.txStartCount++;
     return CAN_GATEWAY_STATUS_OK;
 }
 
-static uint32_t can_enqueue_tx(can_channel_t *ch, const can_gateway_frame_t *frame)
+/* Poll TX mailbox completion flags and free finished mailboxes. */
+static void can_poll_tx_done(can_channel_t *ch)
 {
-    if (!can_validate_tx_frame(ch, frame))
+    for (uint8_t i = 0U; i < ch->plan->txMbCount; i++)
     {
-        ch->status.txErrorCount++;
-        can_log_tx_reject(ch, frame, "enqueue");
-        return CAN_GATEWAY_STATUS_INVALID_PACKET;
-    }
+        uint8_t mbIdx = (uint8_t)(ch->plan->txMbFirst + i);
 
-    if (ch->txQueued >= CAN_SERVICE_TX_QUEUE_SIZE)
-    {
-        ch->status.txDropCount++;
-        if (ch->config.txDropPolicy == CAN_SERVICE_TX_DROP_NEWEST)
+        if ((ch->txMbBusy[i] != 0U) && (FLEXCAN_GetMbStatusFlags(ch->base, (uint64_t)1U << mbIdx) != 0U))
         {
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-            PRINTF("CAN%d: TX queue full drop newest id=0x%x queued=%u\r\n",
-                   ch->index,
-                   (unsigned)frame->can_id,
-                   (unsigned)ch->txQueued);
-#endif
-            return CAN_GATEWAY_STATUS_QUEUE_FULL;
+            FLEXCAN_ClearMbStatusFlags(ch->base, (uint64_t)1U << mbIdx);
+            ch->txMbBusy[i] = 0U;
+            ch->status.txDoneCount++;
         }
-
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-        PRINTF("CAN%d: TX queue full drop oldest id=0x%x queued=%u\r\n",
-               ch->index,
-               (unsigned)ch->txQueue[ch->txTail].can_id,
-               (unsigned)ch->txQueued);
-#endif
-        ch->txTail = (uint8_t)((ch->txTail + 1U) % CAN_SERVICE_TX_QUEUE_SIZE);
-        ch->txQueued--;
     }
-
-    ch->txQueue[ch->txHead] = *frame;
-    ch->txHead = (uint8_t)((ch->txHead + 1U) % CAN_SERVICE_TX_QUEUE_SIZE);
-    ch->txQueued++;
-    ch->status.txQueued = ch->txQueued;
-
-    if (ch->status.txQueued > ch->status.txQueueWatermark)
-    {
-        ch->status.txQueueWatermark = ch->status.txQueued;
-    }
-
-    return CAN_GATEWAY_STATUS_OK;
 }
 
 static void can_pop_tx(can_channel_t *ch)
@@ -907,96 +652,70 @@ static void can_pop_tx(can_channel_t *ch)
 
 static void can_process_tx_queue(can_channel_t *ch)
 {
-    uint32_t status;
+    while (ch->txQueued > 0U)
+    {
+        int8_t localMb = can_find_free_tx_mb(ch);
+        uint32_t status;
 
-    if (!ch->txDone || (ch->txQueued == 0U))
-    {
-        return;
-    }
+        if (localMb < 0)
+        {
+            break; /* all TX mailboxes in flight */
+        }
 
-    status = can_start_tx(ch, &ch->txQueue[ch->txTail]);
-    if (status == CAN_GATEWAY_STATUS_OK)
-    {
-        can_pop_tx(ch);
-    }
-    else if (status != CAN_GATEWAY_STATUS_CAN_TX_BUSY)
-    {
-        ch->status.txDropCount++;
-        can_pop_tx(ch);
+        status = can_start_tx(ch, (uint8_t)localMb, &ch->txQueue[ch->txTail]);
+        if (status == CAN_GATEWAY_STATUS_OK)
+        {
+            can_pop_tx(ch);
+        }
+        else if (status == CAN_GATEWAY_STATUS_CAN_TX_BUSY)
+        {
+            break; /* mailbox not ready; retry next poll */
+        }
+        else
+        {
+            ch->status.txDropCount++;
+            can_pop_tx(ch); /* invalid/unsendable frame: drop and move on */
+        }
     }
 }
 
 static void can_abort_timed_out_tx(can_channel_t *ch)
 {
-    if (ch->txDone || ((s_ms - ch->txStartMs) < TX_TIMEOUT_MS))
+    for (uint8_t i = 0U; i < ch->plan->txMbCount; i++)
     {
-        return;
-    }
+        uint8_t mbIdx;
 
-    if (ch->useFD)
-    {
-        FLEXCAN_TransferFDAbortSend(ch->base, &ch->handle, TX_MB_IDX);
-    }
-    else
-    {
-        FLEXCAN_TransferAbortSend(ch->base, &ch->handle, TX_MB_IDX);
-    }
-
-    ch->txDone = true;
-    ch->status.txTimeoutCount++;
-    ch->status.txErrorCount++;
-    can_queue_error_event(ch, CAN_ERR_TX_TIMEOUT, CAN_ERR_CRTL_TX_OVERFLOW);
-#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
-    PRINTF("CAN%d: TX timeout, abort pending frame\r\n", ch->index);
-#endif
-}
-
-static void can_send_periodic(can_channel_t *ch)
-{
-    can_gateway_frame_t frame;
-    uint8_t dataLen;
-
-    can_abort_timed_out_tx(ch);
-    if ((s_ms - ch->lastTxMs) < TX_PERIOD_MS)
-    {
-        return;
-    }
-
-    memset(&frame, 0, sizeof(frame));
-    frame.channel = ch->index;
-    frame.flags = ch->useFD ? CAN_GATEWAY_FLAG_FD : 0U;
-    if (ch->useFD && ch->config.brs)
-    {
-        frame.flags |= CAN_GATEWAY_FLAG_BRS;
-    }
-    frame.dlc = ch->useFD ? CAN_FD_DLC : CAN_CLASSIC_DLC;
-    frame.can_id = ch->txId;
-    frame.timestamp = s_ms;
-    frame.status = CAN_GATEWAY_STATUS_OK;
-
-    dataLen = dlc_to_len(frame.dlc);
-    frame.data[0] = (uint8_t)(ch->txCounter >> 24);
-    frame.data[1] = (uint8_t)(ch->txCounter >> 16);
-    frame.data[2] = (uint8_t)(ch->txCounter >> 8);
-    frame.data[3] = (uint8_t)ch->txCounter;
-
-    if (dataLen > 4U)
-    {
-        for (uint8_t i = 4U; i < dataLen; i++)
+        if ((ch->txMbBusy[i] == 0U) || ((s_ms - ch->txStartMs[i]) < TX_TIMEOUT_MS))
         {
-            frame.data[i] = (uint8_t)i;
+            continue;
         }
-    }
 
-    if (can_start_tx(ch, &frame) == CAN_GATEWAY_STATUS_OK)
-    {
-        ch->txCounter++;
+        /* Re-configuring the mailbox to inactive aborts the stuck transmission. */
+        mbIdx = (uint8_t)(ch->plan->txMbFirst + i);
+        if (ch->useFD)
+        {
+            FLEXCAN_SetFDTxMbConfig(ch->base, mbIdx, true);
+        }
+        else
+        {
+            FLEXCAN_SetTxMbConfig(ch->base, mbIdx, true);
+        }
+        FLEXCAN_ClearMbStatusFlags(ch->base, (uint64_t)1U << mbIdx);
+
+        ch->txMbBusy[i] = 0U;
+        ch->status.txTimeoutCount++;
+        ch->status.txErrorCount++;
+        can_queue_error_event(ch, CAN_ERR_TX_TIMEOUT, CAN_ERR_CRTL_TX_OVERFLOW);
     }
 }
 
-static bool can_push_rx(can_channel_t *ch, const can_gateway_frame_t *frame)
+/* Data frames respect the error headroom; error events may use the whole ring. */
+static bool can_push_rx(can_channel_t *ch, const can_gateway_frame_t *frame, bool isError)
 {
-    if (ch->rxQueued >= CAN_SERVICE_RX_RING_SIZE)
+    uint8_t limit = isError ? CAN_SERVICE_RX_RING_SIZE
+                            : (uint8_t)(CAN_SERVICE_RX_RING_SIZE - CAN_SERVICE_RX_ERROR_HEADROOM);
+
+    if (ch->rxQueued >= limit)
     {
         ch->status.rxDropCount++;
         ch->status.rxErrorCount++;
@@ -1068,9 +787,11 @@ static void can_fill_rx_from_classic(can_channel_t *ch, const flexcan_frame_t *r
     {
         frame->flags |= CAN_GATEWAY_FLAG_REMOTE;
     }
-    frame->dlc = (uint8_t)rxFrame->length;
+    /* Classic frames carry at most 8 bytes; a DLC of 9..15 still means 8 and must
+     * not over-read the 8-byte classic mailbox data union. */
+    frame->dlc = (rxFrame->length > CAN_CLASSIC_DLC) ? CAN_CLASSIC_DLC : (uint8_t)rxFrame->length;
     frame->timestamp = s_ms;
-    dataLen = dlc_to_len(frame->dlc);
+    dataLen = frame->dlc;
     copy_words_to_bytes(frame->data, &rxFrame->dataWord0, dataLen);
 }
 
@@ -1081,42 +802,68 @@ static void can_store_rx_frame(can_channel_t *ch, const can_gateway_frame_t *fra
         return;
     }
 
-    if (can_push_rx(ch, frame))
+    if (can_push_rx(ch, frame, false))
     {
         ch->status.rxCount++;
     }
 }
 
-static void can_handle_rx(can_channel_t *ch)
+/* Drain the channel's Rx message-buffer bank: read+clear every mailbox with data. */
+static void can_drain_mb_bank(can_channel_t *ch)
 {
     can_gateway_frame_t frame;
+    uint8_t budget = CAN_SERVICE_RX_DRAIN_MAX;
 
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (can_channel_use_enhanced_rx_fifo(ch))
+    for (uint8_t i = 0U; (i < ch->plan->rxMbCount) && (budget > 0U); i++)
     {
-        for (uint8_t i = 0U; i < CAN_SERVICE_EFIFO_BATCH_SIZE; i++)
+        uint8_t mbIdx = (uint8_t)(ch->plan->rxMbFirst + i);
+        status_t status;
+
+        if (FLEXCAN_GetMbStatusFlags(ch->base, (uint64_t)1U << mbIdx) == 0U)
         {
-            can_fill_rx_from_fd(ch, &ch->rxFifoFrame[i], &frame);
-            can_store_rx_frame(ch, &frame);
+            continue;
         }
 
-        ch->rxFifoDone = false;
-        can_start_rx(ch);
-        return;
-    }
-#endif
+        if (ch->useFD)
+        {
+            status = FLEXCAN_ReadFDRxMb(ch->base, mbIdx, &ch->rxFrame.fd);
+        }
+        else
+        {
+            status = FLEXCAN_ReadRxMb(ch->base, mbIdx, &ch->rxFrame.classic);
+        }
+        FLEXCAN_ClearMbStatusFlags(ch->base, (uint64_t)1U << mbIdx);
 
-    if (ch->useFD)
-    {
-        can_fill_rx_from_fd(ch, &ch->rxFrame.fd, &frame);
+        if ((status != kStatus_Success) && (status != kStatus_FLEXCAN_RxOverflow))
+        {
+            continue;
+        }
+
+        if (status == kStatus_FLEXCAN_RxOverflow)
+        {
+            /* A frame was overwritten on this MB before it was read (lost). Count it in
+             * the dedicated overflow counter (rx_fifo_overflow, the documented acceptance
+             * field) as well as the aggregate error counter. */
+            ch->status.rxFifoOverflowCount++;
+            ch->status.rxErrorCount++;
+        }
+
+        if (ch->useFD)
+        {
+            can_fill_rx_from_fd(ch, &ch->rxFrame.fd, &frame);
+        }
+        else
+        {
+            can_fill_rx_from_classic(ch, &ch->rxFrame.classic, &frame);
+        }
+        can_store_rx_frame(ch, &frame);
+        budget--;
     }
-    else
-    {
-        can_fill_rx_from_classic(ch, &ch->rxFrame.classic, &frame);
-    }
-    can_store_rx_frame(ch, &frame);
-    ch->rxDone = false;
-    can_start_rx(ch);
+}
+
+static void can_handle_rx(can_channel_t *ch)
+{
+    can_drain_mb_bank(ch);
 }
 
 static void can_update_error_state(can_channel_t *ch)
@@ -1125,6 +872,7 @@ static void can_update_error_state(can_channel_t *ch)
     uint8_t rxErr = 0U;
     uint64_t flags;
     uint32_t faultState;
+    can_service_state_t newState;
 
     can_read_error_counters(ch, &txErr, &rxErr);
     flags = FLEXCAN_GetStatusFlags(ch->base);
@@ -1132,55 +880,41 @@ static void can_update_error_state(can_channel_t *ch)
 
     if (faultState >= 2U)
     {
-        ch->status.state = CAN_SERVICE_STATE_BUS_OFF;
+        newState = CAN_SERVICE_STATE_BUS_OFF;
     }
     else if (faultState == 1U)
     {
-        ch->status.state = CAN_SERVICE_STATE_ERROR_PASSIVE;
+        newState = CAN_SERVICE_STATE_ERROR_PASSIVE;
     }
     else if ((((uint32_t)flags & ((uint32_t)kFLEXCAN_TxErrorWarningFlag | (uint32_t)kFLEXCAN_RxErrorWarningFlag)) != 0U) ||
              (txErr >= CAN_ERROR_WARNING_THRESHOLD) || (rxErr >= CAN_ERROR_WARNING_THRESHOLD))
     {
-        ch->status.state = CAN_SERVICE_STATE_WARNING;
+        newState = CAN_SERVICE_STATE_WARNING;
     }
     else
     {
-        ch->status.state = CAN_SERVICE_STATE_ERROR_ACTIVE;
+        newState = CAN_SERVICE_STATE_ERROR_ACTIVE;
     }
-}
 
-static void can_restart_rx_fifo(can_channel_t *ch)
-{
-#if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (can_channel_use_enhanced_rx_fifo(ch))
+    /* Emit a SocketCAN error frame when the bus condition worsens (polled, 10 ms). */
+    if (newState > ch->status.state)
     {
-        FLEXCAN_TransferAbortReceiveEnhancedFifo(ch->base, &ch->handle);
-        ch->rxFifoDone = false;
-        ch->rxFifoRestartNeeded = false;
-        can_start_rx(ch);
-    }
-#else
-    (void)ch;
-#endif
-}
+        uint8_t ctrl = can_error_ctrl_bits(txErr, rxErr);
 
-#if CAN_SERVICE_ENABLE_PERIODIC_STATUS
-static void can_print_status(const can_channel_t *ch)
-{
-    PRINTF("CAN%d: status rx=%u tx_start=%u tx_done=%u txq=%u rxq=%u tx_drop=%u rx_drop=%u err=%u fifo_ovf=%u last=0x%x\r\n",
-           ch->index,
-           (unsigned)ch->status.rxCount,
-           (unsigned)ch->status.txStartCount,
-           (unsigned)ch->status.txDoneCount,
-           (unsigned)ch->status.txQueued,
-           (unsigned)ch->status.rxQueued,
-           (unsigned)ch->status.txDropCount,
-           (unsigned)ch->status.rxDropCount,
-           (unsigned)(ch->status.txErrorCount + ch->status.rxErrorCount + ch->status.txTimeoutCount),
-           (unsigned)ch->status.rxFifoOverflowCount,
-           (unsigned)ch->status.lastErrorStatus);
+        if (newState == CAN_SERVICE_STATE_BUS_OFF)
+        {
+            ch->status.busOffCount++;
+            can_queue_error_event(ch, CAN_ERR_BUSOFF | CAN_ERR_BUSERROR, ctrl);
+        }
+        else
+        {
+            can_queue_error_event(ch, CAN_ERR_BUSERROR | CAN_ERR_CRTL, ctrl);
+        }
+        ch->status.lastErrorStatus = (uint32_t)flags;
+    }
+
+    ch->status.state = newState;
 }
-#endif
 
 bool can_service_init(uint32_t activeMask)
 {
@@ -1197,6 +931,7 @@ bool can_service_init(uint32_t activeMask)
         can_channel_t *ch = &s_can[i];
 
         ch->base = s_canConfig[i].base;
+        ch->plan = &s_canConfig[i];
         ch->clkFreq = CLOCK_GetFreq(s_canConfig[i].clkName);
         ch->txId = s_canConfig[i].txId;
         ch->index = i;
@@ -1221,24 +956,21 @@ bool can_service_init(uint32_t activeMask)
 
         if (ch->useFD)
         {
-            const char *rxPath = can_channel_use_enhanced_rx_fifo(ch) ? "efifo" : "mb";
-
-            PRINTF("CAN%d: enabled CAN FD %ukbps/%ukbps BRS %s TX=0x%x RX=%s batch=%u watermark=%u\r\n",
+            PRINTF("CAN%d: FD %ukbps/%ukbps BRS %s rx=mb-bank(%u) tx_mb=%u\r\n",
                    i,
                    (unsigned)(ch->bitRate / 1000U),
                    (unsigned)(ch->bitRateFD / 1000U),
                    ch->config.brs ? "on" : "off",
-                   (unsigned)ch->txId,
-                   rxPath,
-                   (unsigned)CAN_SERVICE_EFIFO_BATCH_SIZE,
-                   (unsigned)CAN_SERVICE_EFIFO_WATERMARK);
+                   (unsigned)ch->plan->rxMbCount,
+                   (unsigned)ch->plan->txMbCount);
         }
         else
         {
-            PRINTF("CAN%d: enabled Classic CAN %ukbps TX=0x%x\r\n",
+            PRINTF("CAN%d: Classic %ukbps rx=mb-bank(%u) tx_mb=%u\r\n",
                    i,
                    (unsigned)(ch->bitRate / 1000U),
-                   (unsigned)ch->txId);
+                   (unsigned)ch->plan->rxMbCount,
+                   (unsigned)ch->plan->txMbCount);
         }
     }
 
@@ -1268,48 +1000,18 @@ void can_service_poll(void)
             can_update_error_state(ch);
         }
 
-#if CAN_SERVICE_ENABLE_PERIODIC_TX
-        can_send_periodic(ch);
-#else
+        can_poll_tx_done(ch);
         can_abort_timed_out_tx(ch);
         can_process_tx_queue(ch);
-#endif
-
-        if (ch->rxFifoRestartNeeded)
-        {
-            can_restart_rx_fifo(ch);
-        }
-
-        if (ch->rxFifoDone)
-        {
-            can_handle_rx(ch);
-        }
-
-        if (ch->rxDone)
-        {
-            can_handle_rx(ch);
-        }
-
+        can_handle_rx(ch);
         can_flush_pending_error_frame(ch);
     }
-
-#if CAN_SERVICE_ENABLE_PERIODIC_STATUS
-    if ((s_ms - s_lastStatusMs) >= STATUS_PERIOD_MS)
-    {
-        s_lastStatusMs = s_ms;
-        for (uint8_t i = 0U; i < CAN_SERVICE_CHANNEL_COUNT; i++)
-        {
-            if (s_can[i].status.enabled)
-            {
-                can_print_status(&s_can[i]);
-            }
-        }
-    }
-#endif
 }
 
 uint32_t can_service_send(uint8_t channel, const can_gateway_frame_t *frame)
 {
+    can_channel_t *ch;
+
     if ((frame == NULL) || (channel >= CAN_SERVICE_CHANNEL_COUNT) || (frame->channel != channel))
     {
         return CAN_GATEWAY_STATUS_INVALID_PACKET;
@@ -1320,7 +1022,37 @@ uint32_t can_service_send(uint8_t channel, const can_gateway_frame_t *frame)
         return CAN_GATEWAY_STATUS_DISABLED_CHANNEL;
     }
 
-    return can_enqueue_tx(&s_can[channel], frame);
+    ch = &s_can[channel];
+
+    if (!can_validate_tx_frame(ch, frame))
+    {
+        ch->status.txErrorCount++;
+        return CAN_GATEWAY_STATUS_INVALID_PACKET;
+    }
+
+    if (ch->txQueued >= CAN_SERVICE_TX_QUEUE_SIZE)
+    {
+        ch->status.txDropCount++;
+        if (ch->config.txDropPolicy == CAN_SERVICE_TX_DROP_NEWEST)
+        {
+            return CAN_GATEWAY_STATUS_QUEUE_FULL;
+        }
+        ch->txTail = (uint8_t)((ch->txTail + 1U) % CAN_SERVICE_TX_QUEUE_SIZE);
+        ch->txQueued--;
+    }
+
+    ch->txQueue[ch->txHead] = *frame;
+    ch->txHead = (uint8_t)((ch->txHead + 1U) % CAN_SERVICE_TX_QUEUE_SIZE);
+    ch->txQueued++;
+    ch->status.txQueued = ch->txQueued;
+    if (ch->status.txQueued > ch->status.txQueueWatermark)
+    {
+        ch->status.txQueueWatermark = ch->status.txQueued;
+    }
+
+    /* Kick the queue so the first frame is written without waiting a poll period. */
+    can_process_tx_queue(ch);
+    return CAN_GATEWAY_STATUS_OK;
 }
 
 bool can_service_read(uint8_t channel, can_gateway_frame_t *frame)
@@ -1343,6 +1075,57 @@ bool can_service_read(uint8_t channel, can_gateway_frame_t *frame)
     ch->rxQueued--;
     ch->status.rxQueued = ch->rxQueued;
     return true;
+}
+
+uint16_t can_service_rx_available(uint8_t channel)
+{
+    if (!can_channel_enabled(channel))
+    {
+        return 0U;
+    }
+
+    return s_can[channel].rxQueued;
+}
+
+bool can_service_peek(uint8_t channel, uint16_t offset, can_gateway_frame_t *frame)
+{
+    can_channel_t *ch;
+    uint8_t idx;
+
+    if ((frame == NULL) || !can_channel_enabled(channel))
+    {
+        return false;
+    }
+
+    ch = &s_can[channel];
+    if (offset >= ch->rxQueued)
+    {
+        return false;
+    }
+
+    idx = (uint8_t)((ch->rxTail + offset) % CAN_SERVICE_RX_RING_SIZE);
+    *frame = ch->rxRing[idx];
+    return true;
+}
+
+void can_service_consume(uint8_t channel, uint16_t count)
+{
+    can_channel_t *ch;
+
+    if (!can_channel_enabled(channel))
+    {
+        return;
+    }
+
+    ch = &s_can[channel];
+    if (count > ch->rxQueued)
+    {
+        count = ch->rxQueued;
+    }
+
+    ch->rxTail = (uint8_t)((ch->rxTail + count) % CAN_SERVICE_RX_RING_SIZE);
+    ch->rxQueued = (uint8_t)(ch->rxQueued - count);
+    ch->status.rxQueued = ch->rxQueued;
 }
 
 can_service_status_t can_service_get_status(uint8_t channel)
@@ -1399,11 +1182,8 @@ void can_service_reset_stats(void)
         can_service_state_t state = ch->status.state;
 
         memset(&ch->status, 0, sizeof(ch->status));
-        ch->status.enabled = ch->config.enabled;
-        ch->status.useFD = ch->config.useFD;
         ch->status.state = state;
-        ch->status.bitRate = ch->config.bitRate;
-        ch->status.bitRateFD = ch->config.useFD ? ch->config.bitRateFD : 0U;
+        can_sync_channel_from_config(ch);
         ch->status.rxQueued = ch->rxQueued;
         ch->status.txQueued = ch->txQueued;
     }

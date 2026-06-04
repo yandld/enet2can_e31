@@ -26,4 +26,14 @@
 // #define USE_PNGDEC_DRIVER 0
 // #define CONFIG_BOOT_CUSTOM_DEVICE_SETUP 0
 
+/*
+ * The D-Cache is enabled (board.c: SCB_EnableDCache) and the Synopsys ENET_QOS
+ * RX/TX DMA data buffers live in cacheable SRAM. Enable the SDK's ENET cache
+ * maintenance so received buffers are invalidated before the CPU reads them and
+ * transmit buffers are cleaned before DMA. Without this, the CPU reads stale
+ * cache lines and the driver drops/corrupts frames sporadically (intermittent
+ * ping/UDP loss at any rate). See fsl_enet_qos.c ENET_QOS_DcacheInvalidateByRange.
+ */
+#define FSL_ETH_ENABLE_CACHE_CONTROL 1
+
 #endif /* _MCUX_CONFIG_H_ */

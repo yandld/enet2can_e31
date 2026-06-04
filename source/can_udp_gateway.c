@@ -17,9 +17,9 @@
 #include "lwip/pbuf.h"
 #include "lwip/udp.h"
 
-#define STATUS_JSON_SIZE 3600U
+#define STATUS_JSON_SIZE 4400U
 #define CONFIG_JSON_SIZE 1800U
-#define CAPABILITIES_JSON_SIZE 700U
+#define CAPABILITIES_JSON_SIZE 900U
 #define ACK_JSON_SIZE 160U
 #define CONTROL_REQUEST_SIZE 512U
 
@@ -52,6 +52,24 @@ static tunnel_counter_t s_tunnel;
 static const char *json_bool(bool value)
 {
     return value ? "true" : "false";
+}
+
+/* DLC code -> payload byte count (CAN FD table). */
+static uint8_t dlc_to_len(uint8_t dlc)
+{
+    static const uint8_t table[16] = {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U,
+                                      8U, 12U, 16U, 20U, 24U, 32U, 48U, 64U};
+    return (dlc < 16U) ? table[dlc] : CAN_GATEWAY_MAX_DATA_LEN;
+}
+
+/* Payload bytes carried on the wire for a frame: FD uses the DLC table, Classic caps at 8. */
+static uint8_t wire_data_len(uint8_t flags, uint8_t dlc)
+{
+    if ((flags & CAN_GATEWAY_FLAG_FD) != 0U)
+    {
+        return dlc_to_len(dlc);
+    }
+    return (dlc > 8U) ? 8U : dlc;
 }
 
 static const char *can_state_to_json(can_service_state_t state)
@@ -277,18 +295,29 @@ static void update_data_session(const ip_addr_t *addr, uint16_t port)
     s_sessionKnown = true;
 }
 
-static bool packet_from_pbuf(const struct pbuf *p, can_gateway_packet_t *packet, uint16_t *wireLength)
+/*
+ * Parse a v3 variable-length datagram into an in-memory packet. Each record is a
+ * 16-byte head followed by wire_data_len(flags, dlc) payload bytes. Rejects any
+ * truncated record or trailing bytes so a malformed datagram is dropped whole.
+ */
+static bool parse_packet(const struct pbuf *p, can_gateway_packet_t *packet)
 {
-    uint16_t expectedLength;
+    uint8_t buf[CAN_GATEWAY_MAX_PACKET_BYTES];
+    uint16_t total;
+    uint16_t offset;
+    uint16_t count;
 
-    if ((p == NULL) || (packet == NULL) || (wireLength == NULL) ||
-        (p->tot_len < sizeof(can_gateway_packet_header_t)) || (p->tot_len > sizeof(can_gateway_packet_t)))
+    if ((p == NULL) || (packet == NULL) ||
+        (p->tot_len < CAN_GATEWAY_PACKET_HEADER_SIZE) || (p->tot_len > sizeof(buf)))
     {
         return false;
     }
 
+    total = p->tot_len;
+    (void)pbuf_copy_partial((struct pbuf *)p, buf, total, 0);
+
     memset(packet, 0, sizeof(*packet));
-    (void)pbuf_copy_partial((struct pbuf *)p, packet, p->tot_len, 0);
+    memcpy(&packet->header, buf, CAN_GATEWAY_PACKET_HEADER_SIZE);
 
     if ((packet->header.magic != CAN_GATEWAY_MAGIC) || (packet->header.version != CAN_GATEWAY_VERSION) ||
         (packet->header.packet_type != CAN_GATEWAY_PACKET_TYPE_FRAMES) ||
@@ -297,15 +326,35 @@ static bool packet_from_pbuf(const struct pbuf *p, can_gateway_packet_t *packet,
         return false;
     }
 
-    expectedLength = (uint16_t)(sizeof(can_gateway_packet_header_t) +
-                               (sizeof(can_gateway_frame_t) * packet->header.frame_count));
-    if (p->tot_len != expectedLength)
+    count = packet->header.frame_count;
+    offset = CAN_GATEWAY_PACKET_HEADER_SIZE;
+
+    for (uint16_t i = 0U; i < count; i++)
     {
-        return false;
+        can_gateway_frame_t *frame = &packet->frames[i];
+        uint8_t len;
+
+        if ((uint32_t)offset + CAN_GATEWAY_FRAME_HEAD_SIZE > total)
+        {
+            return false;
+        }
+
+        memcpy(frame, &buf[offset], CAN_GATEWAY_FRAME_HEAD_SIZE);
+        len = wire_data_len(frame->flags, frame->dlc);
+
+        if ((uint32_t)offset + CAN_GATEWAY_FRAME_HEAD_SIZE + len > total)
+        {
+            return false;
+        }
+
+        if (len != 0U)
+        {
+            memcpy(frame->data, &buf[offset + CAN_GATEWAY_FRAME_HEAD_SIZE], len);
+        }
+        offset += (uint16_t)(CAN_GATEWAY_FRAME_HEAD_SIZE + len);
     }
 
-    *wireLength = expectedLength;
-    return true;
+    return (offset == total);
 }
 
 static void log_control_result(const char *command, uint32_t status)
@@ -444,6 +493,8 @@ static void build_status_json(char *buffer, size_t size)
                     "\"tx_done\":%u,\"tx_queue\":%u,\"rx_queue\":%u,\"tx_drop\":%u,"
                     "\"rx_drop\":%u,\"error\":%u,\"last_error\":%u,\"tx_err_counter\":%u,"
                     "\"rx_err_counter\":%u,\"rx_fifo_overflow\":%u,\"rx_fifo_warning\":%u,"
+                    "\"rx_capacity\":%u,\"tx_capacity\":%u,\"rx_drain_max\":%u,"
+                    "\"rx_hw_slots\":%u,\"tx_mb\":%u,\"rx_mb\":%u,\"rx_path\":\"%s\","
                     "\"watermark\":{\"rx\":%u,\"tx\":%u}}",
                     (channel == 0U) ? "" : ",",
                     (unsigned)channel,
@@ -463,6 +514,13 @@ static void build_status_json(char *buffer, size_t size)
                     (unsigned)can->rxErrCounter,
                     (unsigned)can->rxFifoOverflowCount,
                     (unsigned)can->rxFifoWarningCount,
+                    (unsigned)can->rxCapacity,
+                    (unsigned)can->txCapacity,
+                    (unsigned)can->rxDrainMax,
+                    (unsigned)can->rxHwSlots,
+                    (unsigned)can->txMbCount,
+                    (unsigned)can->rxMbCount,
+                    can->enhancedRxFifo ? "efifo" : "mb-bank",
                     (unsigned)can->rxQueueWatermark,
                     (unsigned)can->txQueueWatermark);
     }
@@ -484,14 +542,18 @@ static void build_capabilities_json(char *buffer, size_t size)
                 &used,
                 "{\"version\":%u,\"protocol\":\"socketcan-tunnel\",\"data_port\":%u,"
                 "\"control_port\":%u,\"max_channels\":%u,\"max_frames_per_packet\":%u,"
-                "\"max_data_len\":%u,\"commands\":[\"get_capabilities\",\"get_status\","
+                "\"max_data_len\":%u,\"rx_queue_capacity\":%u,\"tx_queue_capacity\":%u,"
+                "\"rx_drain_max\":%u,\"commands\":[\"get_capabilities\",\"get_status\","
                 "\"get_config\",\"set_can_config\",\"reset_stats\"]}\n",
                 (unsigned)CAN_GATEWAY_VERSION,
                 (unsigned)CAN_GATEWAY_UDP_DATA_PORT,
                 (unsigned)CAN_GATEWAY_UDP_CONTROL_PORT,
                 (unsigned)CAN_GATEWAY_MAX_CHANNELS,
                 (unsigned)CAN_GATEWAY_MAX_FRAMES_PER_PACKET,
-                (unsigned)CAN_GATEWAY_MAX_DATA_LEN);
+                (unsigned)CAN_GATEWAY_MAX_DATA_LEN,
+                (unsigned)CAN_SERVICE_RX_RING_SIZE,
+                (unsigned)CAN_SERVICE_TX_QUEUE_SIZE,
+                (unsigned)CAN_SERVICE_RX_DRAIN_MAX);
 }
 
 static void build_ack_json(char *buffer, size_t size, const char *command)
@@ -506,62 +568,89 @@ static void build_ack_json(char *buffer, size_t size, const char *command)
                 command);
 }
 
-static uint32_t send_packet_to_session(const can_gateway_frame_t *frames, uint16_t frameCount)
+/*
+ * Drain queued CAN frames into one UDP datagram and send it. Lossless under
+ * backpressure: the pbuf is allocated BEFORE any frame is consumed, so when the
+ * lwIP heap is exhausted the frames stay queued in the CAN service and are
+ * retried next poll (bounded latency, not loss). Frames are packed directly into
+ * the pbuf payload in the v3 variable-length wire format. Returns the number of
+ * frames flushed; 0 means nothing to send or heap backpressure.
+ */
+static uint16_t flush_rx_to_session(void)
 {
-    can_gateway_packet_t packet;
+    uint16_t pending = gateway_router_pending();
+    uint16_t count;
+    uint16_t allocLen;
     struct pbuf *p;
-    uint16_t length;
+    uint8_t *buf;
+    uint16_t off;
+    uint16_t n = 0U;
+    can_gateway_frame_t frame;
+    can_gateway_packet_header_t header;
     err_t err;
 
-    if ((s_dataPcb == NULL) || (frameCount > CAN_GATEWAY_MAX_FRAMES_PER_PACKET))
+    if (pending == 0U)
     {
-        s_tunnel.drop++;
-        return CAN_GATEWAY_STATUS_INVALID_PACKET;
+        return 0U;
     }
 
-    if (!s_sessionKnown)
-    {
-        s_tunnel.noSession++;
-        return CAN_GATEWAY_STATUS_NO_SESSION;
-    }
+    count = (pending > CAN_GATEWAY_MAX_FRAMES_PER_PACKET) ? CAN_GATEWAY_MAX_FRAMES_PER_PACKET : pending;
+    allocLen = (uint16_t)(CAN_GATEWAY_PACKET_HEADER_SIZE + (count * CAN_GATEWAY_MAX_FRAME_RECORD));
 
-    memset(&packet, 0, sizeof(packet));
-    packet.header.magic = CAN_GATEWAY_MAGIC;
-    packet.header.version = CAN_GATEWAY_VERSION;
-    packet.header.packet_type = CAN_GATEWAY_PACKET_TYPE_FRAMES;
-    packet.header.frame_count = frameCount;
-    packet.header.sequence = s_tunnel.txSequence;
-    packet.header.status = CAN_GATEWAY_STATUS_OK;
-    if ((frames != NULL) && (frameCount > 0U))
-    {
-        memcpy(packet.frames, frames, sizeof(can_gateway_frame_t) * frameCount);
-    }
-
-    length = (uint16_t)(sizeof(can_gateway_packet_header_t) + (sizeof(can_gateway_frame_t) * frameCount));
-    p = pbuf_alloc(PBUF_TRANSPORT, length, PBUF_RAM);
+    p = pbuf_alloc(PBUF_TRANSPORT, allocLen, PBUF_RAM);
     if (p == NULL)
     {
-        s_tunnel.drop++;
-        return CAN_GATEWAY_STATUS_QUEUE_FULL;
+        return 0U; /* heap backpressure: leave frames queued, retry next poll */
     }
 
-    err = pbuf_take(p, &packet, length);
-    if (err == ERR_OK)
+    buf = (uint8_t *)p->payload;
+    off = CAN_GATEWAY_PACKET_HEADER_SIZE;
+
+    while ((n < count) && gateway_router_peek_udp_frame(&frame))
     {
-        err = udp_sendto(s_dataPcb, p, &s_sessionAddr, s_sessionPort);
+        uint8_t len = wire_data_len(frame.flags, frame.dlc);
+
+        memcpy(&buf[off], &frame, CAN_GATEWAY_FRAME_HEAD_SIZE);
+        if (len != 0U)
+        {
+            memcpy(&buf[off + CAN_GATEWAY_FRAME_HEAD_SIZE], frame.data, len);
+        }
+        off += (uint16_t)(CAN_GATEWAY_FRAME_HEAD_SIZE + len);
+        n++;
     }
+
+    if (n == 0U)
+    {
+        gateway_router_reset_peek();
+        pbuf_free(p);
+        return 0U;
+    }
+
+    header.magic = CAN_GATEWAY_MAGIC;
+    header.version = CAN_GATEWAY_VERSION;
+    header.packet_type = CAN_GATEWAY_PACKET_TYPE_FRAMES;
+    header.frame_count = n;
+    header.sequence = s_tunnel.txSequence;
+    header.status = CAN_GATEWAY_STATUS_OK;
+    memcpy(buf, &header, CAN_GATEWAY_PACKET_HEADER_SIZE);
+
+    (void)pbuf_realloc(p, off);
+    err = udp_sendto(s_dataPcb, p, &s_sessionAddr, s_sessionPort);
     pbuf_free(p);
 
     if (err == ERR_OK)
     {
+        gateway_router_commit_peeked(); /* consume frames only now that the send succeeded */
         s_tunnel.txPackets++;
-        s_tunnel.txFrames += frameCount;
+        s_tunnel.txFrames += n;
         s_tunnel.txSequence++;
-        return CAN_GATEWAY_STATUS_OK;
+        return n;
     }
 
-    s_tunnel.drop++;
-    return CAN_GATEWAY_STATUS_CAN_TX_ERROR;
+    /* Send failed (e.g. no TX buffer): leave frames queued and retry next poll
+     * instead of dropping them (bounded latency, not loss). */
+    gateway_router_reset_peek();
+    return 0U;
 }
 
 static void send_json_to_control_peer(const ip_addr_t *addr, uint16_t port, const char *json)
@@ -639,7 +728,6 @@ static void can_udp_gateway_data_recv(void *arg,
                                       uint16_t port)
 {
     can_gateway_packet_t packet;
-    uint16_t wireLength;
 
     (void)arg;
     (void)pcb;
@@ -649,41 +737,27 @@ static void can_udp_gateway_data_recv(void *arg,
         return;
     }
 
-    if (!packet_from_pbuf(p, &packet, &wireLength))
+    /* Hot path: no blocking PRINTF here. Drops/parse-errors are counted and
+     * surfaced via the JSON status endpoint instead. */
+    if (!parse_packet(p, &packet))
     {
         s_tunnel.parseError++;
         s_tunnel.drop++;
-        PRINTF("UDP data parse error len=%u parse_error=%u drop=%u\r\n",
-               (unsigned)p->tot_len,
-               (unsigned)s_tunnel.parseError,
-               (unsigned)s_tunnel.drop);
         pbuf_free(p);
         return;
     }
 
-    (void)wireLength;
     pbuf_free(p);
     update_data_session(addr, port);
     track_rx_sequence(packet.header.sequence);
     s_tunnel.rxPackets++;
     s_tunnel.rxFrames += packet.header.frame_count;
 
-    if (packet.header.frame_count == 0U)
-    {
-        PRINTF("UDP data session probe seq=%u\r\n", (unsigned)packet.header.sequence);
-    }
-
     for (uint16_t i = 0U; i < packet.header.frame_count; i++)
     {
-        uint32_t status = gateway_router_from_udp(&packet.frames[i]);
-
-        if (status != CAN_GATEWAY_STATUS_OK)
+        if (gateway_router_from_udp(&packet.frames[i]) != CAN_GATEWAY_STATUS_OK)
         {
             s_tunnel.drop++;
-            PRINTF("UDP data route drop ch=%u id=0x%x status=%u\r\n",
-                   (unsigned)packet.frames[i].channel,
-                   (unsigned)packet.frames[i].can_id,
-                   (unsigned)status);
         }
     }
 }
@@ -875,25 +949,13 @@ bool can_udp_gateway_init(void)
 
 void can_udp_gateway_poll(void)
 {
-    can_gateway_frame_t frames[CAN_GATEWAY_MAX_FRAMES_PER_PACKET];
-    uint16_t frameCount;
-
     if (!s_initialized || !s_sessionKnown)
     {
         return;
     }
 
-    do
+    /* Flush queued CAN frames in MTU-sized batches until drained or backpressured. */
+    while (flush_rx_to_session() == CAN_GATEWAY_MAX_FRAMES_PER_PACKET)
     {
-        frameCount = 0U;
-        while ((frameCount < CAN_GATEWAY_MAX_FRAMES_PER_PACKET) && gateway_router_next_udp_frame(&frames[frameCount]))
-        {
-            frameCount++;
-        }
-
-        if (frameCount > 0U)
-        {
-            (void)send_packet_to_session(frames, frameCount);
-        }
-    } while (frameCount == CAN_GATEWAY_MAX_FRAMES_PER_PACKET);
+    }
 }

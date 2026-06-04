@@ -20,7 +20,7 @@ from can_gateway_protocol import (
     FLAG_EXTENDED_ID,
     FLAG_FD,
     FLAG_REMOTE,
-    FRAME_RECORD,
+    MAX_PACKET_BYTES,
     GatewayFrame,
     GatewayPacket,
     MAX_FRAMES_PER_PACKET,
@@ -32,6 +32,9 @@ from can_gateway_protocol import (
 
 MAX_CHANNELS = 6
 MAX_DATA_LEN = 64
+# Socket receive buffer raised so the kernel does not drop frames/datagrams
+# during a burst before the bridge drains them.
+SOCK_RCVBUF_BYTES = 4 * 1024 * 1024
 
 CAN_EFF_FLAG = 0x80000000
 CAN_RTR_FLAG = 0x40000000
@@ -152,6 +155,10 @@ def open_can_socket(interface: str) -> socket.socket:
     can_sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
     if hasattr(socket, "CAN_RAW_FD_FRAMES"):
         can_sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
+    try:
+        can_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCK_RCVBUF_BYTES)
+    except OSError:
+        pass
     can_sock.bind((interface,))
     can_sock.setblocking(False)
     return can_sock
@@ -236,6 +243,10 @@ def run_bridge(can_interfaces: Sequence[str],
     stats = BridgeStats(channel_count=len(can_interfaces))
     try:
         udp_sock.bind(("0.0.0.0", local_port))
+        try:
+            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCK_RCVBUF_BYTES)
+        except OSError:
+            pass
         udp_sock.setblocking(False)
         selector.register(udp_sock, selectors.EVENT_READ, ("udp", None))
 
@@ -255,30 +266,45 @@ def run_bridge(can_interfaces: Sequence[str],
             for key, _ in selector.select():
                 kind, channel = key.data
                 if kind == "can":
-                    try:
-                        packet = key.fileobj.recv(CANFD_FRAME.size)
-                        tx_frames.append(gateway_from_can(channel, packet))
-                        stats.record_can_rx(channel)
-                    except (OSError, ValueError) as exc:
-                        stats.record_can_recv_error()
-                        print(f"drop can{channel}: {exc}", file=sys.stderr)
+                    # Drain the whole SocketCAN backlog this wakeup so a burst is
+                    # not throttled to one frame per select() return.
+                    while True:
+                        try:
+                            packet = key.fileobj.recv(CANFD_FRAME.size)
+                        except BlockingIOError:
+                            break
+                        except OSError as exc:
+                            stats.record_can_recv_error()
+                            print(f"drop can{channel}: {exc}", file=sys.stderr)
+                            break
+                        try:
+                            tx_frames.append(gateway_from_can(channel, packet))
+                            stats.record_can_rx(channel)
+                        except ValueError as exc:
+                            stats.record_can_recv_error()
+                            print(f"drop can{channel}: {exc}", file=sys.stderr)
                 else:
-                    packet, _ = udp_sock.recvfrom(FRAME_RECORD.size * 8 + 64)
-                    try:
-                        gateway_packet = GatewayPacket.unpack(packet)
-                    except ValueError as exc:
-                        stats.record_udp_parse_error()
-                        print(f"drop udp: {exc}", file=sys.stderr)
-                        continue
-                    stats.record_udp_rx(gateway_packet)
-                    for frame in gateway_packet.frames:
-                        if frame.channel < len(can_socks):
-                            try:
-                                can_socks[frame.channel].send(can_from_gateway(frame))
-                                stats.record_can_tx(frame.channel)
-                            except OSError as exc:
-                                stats.record_can_send_error()
-                                print(f"drop can{frame.channel}: {exc}", file=sys.stderr)
+                    # Drain all queued UDP datagrams this wakeup.
+                    while True:
+                        try:
+                            packet, _ = udp_sock.recvfrom(MAX_PACKET_BYTES)
+                        except BlockingIOError:
+                            break
+                        try:
+                            gateway_packet = GatewayPacket.unpack(packet)
+                        except ValueError as exc:
+                            stats.record_udp_parse_error()
+                            print(f"drop udp: {exc}", file=sys.stderr)
+                            continue
+                        stats.record_udp_rx(gateway_packet)
+                        for frame in gateway_packet.frames:
+                            if frame.channel < len(can_socks):
+                                try:
+                                    can_socks[frame.channel].send(can_from_gateway(frame))
+                                    stats.record_can_tx(frame.channel)
+                                except OSError as exc:
+                                    stats.record_can_send_error()
+                                    print(f"drop can{frame.channel}: {exc}", file=sys.stderr)
             if tx_frames:
                 tx_sequence = send_gateway_batches(udp_sock, remote, tx_sequence, tx_frames, stats)
             now = time.monotonic()

@@ -1,136 +1,157 @@
-# FRDM-MCXE31B 以太网转 CAN FD 网关
+# FRDM-MCXE31B 以太网转 6 路 CAN FD 网关
 
-这是一个 CAN0-first 的 Ethernet-to-CAN/CAN FD 参考工程。当前目标不是一次性做完整 6 路产品，而是先把 CAN0 的软件架构、配置、状态观测和压测闭环做稳定。
+MCXE31B(= S32K314,Cortex-M7F@160MHz)裸机超级循环 + lwIP(NO_SYS)的 Ethernet-to-6×CAN/CAN FD 网关参考工程。当前阶段目标:**先把 UDP 链路打通,6 路同构、稳定、不丢帧**。
 
-当前范围：
+当前范围:
 
-- 目标板：FRDM-MCXE31B
-- 当前验收通道：CAN0
-- 默认 CAN：CAN FD，仲裁段 1 Mbps，数据段 5 Mbps，BRS on
-- 数据端口：UDP `50000`
-- 控制端口：UDP `50001`
-- 协议：`SCGW` v2，项目内 UDP tunnel 协议
+- 目标板:FRDM-MCXE31B
+- 通道:**6 路 CAN(CAN0–CAN5)默认全部使能**(`CAN_ACTIVE_MASK=0x3F`),配置完全相同
+- 默认 CAN:CAN FD,仲裁段 1 Mbps,数据段 5 Mbps,BRS on
+- 数据端口:UDP `50000`;控制端口:UDP `50001`
+- 协议:`SCGW` v3,项目内 UDP tunnel(变长帧记录,见 `docs/IMPLEMENTATION.md`)
+- CAN 驱动:**全 6 路统一,纯轮询(无 FlexCAN 中断),RX 用独立邮箱组 + IRMQ 接收队列**(不依赖 CAN0 的 Enhanced RX FIFO);评审/实现见 `docs/CODE_REVIEW.md` / `docs/IMPLEMENTATION.md`
+
+> **RX 深度上板验证项**:每路 RX 邮箱组为 `5` 深(64B FD 下最小实例 CAN3/4/5 的硬件上限,6 路取齐)。已开启 `MCR[IRMQ]` 让邮箱组真正级联成 5 深接收队列(未开 IRMQ 时最低邮箱会被就地覆盖,有效深度仅 1)。`5` 深在 6×满载下是否足够,**必须上板实测**(见 `docs/IMPLEMENTATION.md §3`)。
 
 ## 架构
 
 ```text
-main.c
-  ethernet_lwip.c       lwIP, DHCP, link/status
-  can_service.c         FlexCAN SDK boundary, queues, config, counters
-  gateway_router.c      channel validation, route/config/status snapshot
-  can_udp_gateway.c     UDP tunnel endpoint + JSON control endpoint
+main.c                  超级循环: ethernet_lwip_poll / can_service_poll / can_udp_gateway_poll
+  ethernet_lwip.c       lwIP、DHCP/静态 IP、link/IP 状态
+  can_service.c         FlexCAN 边界: 6 路纯轮询、TX/RX 队列、运行时配置、硬件计数
+  gateway_router.c      通道校验、UDP↔CAN 路由、peek/commit 背压、状态快照
+  can_udp_gateway.c     UDP data tunnel(50000) + JSON 控制面(50001)
+  can_gateway_protocol.h  SCGW v3 线格式(MCU 与上位机共享定义)
 
-tools/can_gateway_protocol.py     host 侧共享协议 codec
-tools/win_can_udp_test.py         Windows 配置、冒烟、压测 CLI
-tools/socketcan_udp_bridge.py     Linux vcan/SocketCAN bridge
+tools/can_gateway_protocol.py   上位机共享协议 codec
+tools/win_can_udp_test.py       Windows 配置 / 冒烟 / 多路压测 CLI
+tools/socketcan_udp_bridge.py   Linux vcan/SocketCAN 双向桥
 ```
 
-设计取舍：
+设计取舍:
 
-- `fsl_flexcan` SDK driver 保持原样。
-- `can_service.c` 只封装 FlexCAN init/re-init、TX/RX queue、配置和硬件计数。
-- `can_udp_gateway.c` 只处理 UDP data tunnel 和 JSON control endpoint。
-- Linux 用户侧目标是 SocketCAN/can-utils 体验：`candump`、`cangen`、`canplayer`、`canbusload`。
-- `SCGW` v2 是项目内 tunnel 协议，不是行业标准协议；主流接口是 Linux SocketCAN。
+- `fsl_flexcan` SDK driver 原样使用;`can_service.c` 只封装 init/re-init、TX/RX 队列、配置和硬件计数。
+- 6 路代码路径完全一致,便于验证;CAN0 的 Enhanced RX FIFO 刻意不用。
+- Linux 用户侧直接用 SocketCAN/can-utils 生态(`candump`/`cangen`/`canplayer`/`canbusload`)。
+- `SCGW` v3 是项目内 tunnel 协议,不是行业标准;对外主接口是 Linux SocketCAN。
 
-## Windows 冒烟测试
+## 找到板子 IP
 
-先从串口 DHCP 日志确认板子 IP。下面示例使用 `192.168.8.110`。
+板子默认走 **DHCP**:从串口日志里看 `Ethernet: DHCP bound <ip>`。下面示例统一用 `192.168.8.107`,请替换成你的实际 IP。
 
-重新初始化 CAN0：
+无 DHCP 网络可改**静态 IP**:编译宏 `ETHERNET_LWIP_USE_DHCP=0`(默认 1),静态地址 `192.168.8.50/24`、网关 `192.168.8.1`(见 `source/ethernet_lwip.c`)。
+
+## 控制面命令(JSON over UDP 50001)
+
+Windows 工具是 6 个互斥动作(每次选一个):
+
+| 动作 | 作用 |
+|---|---|
+| `--status` | 查状态(人类可读;加 `--json` 看原始);**已含各路运行配置** |
+| `--config --channel N` | 运行时改某路 CAN 配置 |
+| `--send --channel N` | 向某路发帧(配 `--id`) |
+| `--listen` | 打印板子从 CAN 转发上来的帧 |
+| `--pressure --channels ..` | 压测 + PASS/FAIL 汇总 |
+| `--reset-stats` | 清零所有计数 |
+
+`--config` 可改项(只带要改的):`--channel`(0–5,必填)、`--enabled/--no-enabled`、`--fd/--no-fd`、`--bitrate`(50k–1M)、`--data-bitrate`(500k–5M)、`--brs/--no-brs`、`--filter accept_all|id_mask`、`--filter-id`、`--filter-mask`。运行时改配是安全的(单上下文 deinit→重配→重 init,无竞态)。
+
+## Windows 配置与操作
+
+配置某路(以 CAN3 为例,FD 1M/5M BRS):
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --set-can-config --channel 0 --can-enabled --can-fd --bitrate 1000000 --data-bitrate 5000000 --config-brs --timeout 2
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --config --channel 3 `
+  --fd --bitrate 1000000 --data-bitrate 5000000 --brs
 ```
 
-清计数：
+软件 ID 掩码过滤(只收 `0x100..0x10F`):
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --reset-stats --timeout 2
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --config --channel 0 `
+  --filter id_mask --filter-id 0x100 --filter-mask 0x7F0
 ```
 
-发送一帧 CAN FD+BRS，同时监听 CAN0 到 Ethernet 的回包：
+发一帧 CAN FD+BRS 到 CAN0(PCAN-View 直接可见;同总线的其它通道会收到并经 `--listen` 回显):
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --listen --send-id 0x123 --fd --brs --data "11 22 33 44" --timeout 30
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --send --channel 0 --id 0x123 --fd --brs --data "11 22 33 44"
 ```
 
-查询状态：
+监听板子从 CAN 转发上来的帧(PCAN-View 发 → 板子 → 这里;另开一个终端):
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --status --json --timeout 2
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --listen --timeout 30
 ```
 
-常用判断字段：
+查状态 / 清计数:
+
+```powershell
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --status
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --reset-stats
+```
+
+收不到帧时按此顺序排查:
 
 ```text
-tunnel.rx_frames       MCU 已接收的 Ethernet-to-CAN tunnel frame
-router.rx              router 已接受的 frame
-can[0].tx_start        CAN0 TX start count
-can[0].tx_done         CAN0 TX done count
-can[0].rx              CAN0 RX count
-can[0].rx_fifo_overflow
-can[0].tx_err_counter
-can[0].rx_err_counter
-can[0].watermark
-```
-
-PCAN-View 收不到帧时按这个顺序判断：
-
-```text
-tunnel.rx_frames 不增加       UDP/protocol 没进 MCU
-router.rx 增加但 tx_start 不增 配置、队列或 frame validation 问题
-tx_start/tx_done 增加          CAN bus、PCAN 配置或物理层问题
+tunnel.rx_frames 不增加            UDP/协议没进 MCU(IP/端口/防火墙)
+router.rx 增加但 ch.tx_start 不增   配置、队列或 frame 校验问题
+ch.tx_start/tx_done 增加            CAN 总线、对端配置或物理层问题
 ```
 
 ## Windows 压测
 
-CAN FD+BRS，64 byte payload，summary-only JSON 输出：
+压测会自动取压测前后状态,结束打印一行汇总 + `PASS`/`FAIL`。同总线时建议**单路**压测(多路同总线 = 总线争用,不是带宽叠加):
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --pressure --fd --brs --dlc 64 --duration 600 --rate 1000 --json-report
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --reset-stats
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --pressure --channel 0 `
+  --fd --brs --dlc 64 --duration 600 --rate 1000
 ```
 
-推荐 CAN0 压测流程：
+各路独立总线时,可 round-robin 同时压 6 路:
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --set-can-config --channel 0 --can-enabled --can-fd --bitrate 1000000 --data-bitrate 5000000 --config-brs --timeout 2
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --reset-stats --timeout 2
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --pressure --fd --brs --dlc 64 --duration 600 --rate 1000 --json-report
-python .\tools\win_can_udp_test.py --board 192.168.8.110 --status --json --timeout 2
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --pressure --channels 0 1 2 3 4 5 `
+  --fd --brs --dlc 64 --duration 600 --rate 1000
 ```
 
-非过载输入下的初步验收目标：
+- `--channel N` / `--channels ...`:单路 / 多路 round-robin。
+- 汇总比对压测前后:发送数 vs 板子 `rx_frames`、`tunnel.drop`/`loss`、`router.drop`、各路 `rx_drop`/`tx_drop`/`rx_fifo_overflow`/`error`/`bus-off`。
+- 加 `--json` 打印压测后完整状态。
+
+**验收判据(任一不满足即不达标):**
 
 ```text
-rx_fifo_overflow = 0
-bus-off = 0
-rx_drop = 0
-tx_timeout = 0
-queue watermark 不长期满
+压测汇总 = PASS
+tunnel.loss = 0          UDP 序列无丢包
+router.drop / queue_full = 0
+每路 rx_drop = 0         RX 环满丢帧
+每路 rx_fifo_overflow = 0  硬件邮箱 overrun(被覆盖)丢帧
+每路 error = 0           tx/rx 错误 + tx_timeout 聚合
+每路 state ≠ bus-off
+tx_done 跟得上 tx_start
+watermark 不长期顶满
 ```
+
+> 注:`rx_fifo_overflow` 现统计**硬件邮箱 overrun**(一帧在被读走前被覆盖=丢帧);`error` 聚合里也含它。两者都为 0 才算 RX 无损。
 
 ## Linux SocketCAN
 
-创建 `vcan0`：
+创建 6 个 vcan 并启桥(接口按位置映射到 channel 0..5):
 
 ```bash
 sudo modprobe vcan
-sudo ip link add dev vcan0 type vcan
-sudo ip link set up vcan0
+for i in 0 1 2 3 4 5; do sudo ip link add dev vcan$i type vcan; sudo ip link set up vcan$i; done
+python3 tools/socketcan_udp_bridge.py --remote-host 192.168.8.107 \
+  --can vcan0 vcan1 vcan2 vcan3 vcan4 vcan5 --stats-interval 1
 ```
 
-启动 bridge：
+也可 `--setup-vcan` 让脚本自动创建并拉起 `--can` 指定的接口。标准工具:
 
 ```bash
-python3 tools/socketcan_udp_bridge.py --remote-host 192.168.8.110 --can vcan0
-```
-
-使用标准 SocketCAN 工具：
-
-```bash
-candump vcan0
-cangen vcan0 -g 1 -L 64 -f
+candump vcan3                  # 看 CAN3→以太网过来的帧
+cangen vcan3 -g 1 -L 64 -f     # 向 CAN3 灌 FD 帧(压上位机→CAN)
 canplayer vcan0=can0 -I trace.log
 ```
 
@@ -140,7 +161,7 @@ canplayer vcan0=can0 -I trace.log
 & 'C:\Keil_v5\UV4\UV4.exe' -b 'enet2can_e31.uvprojx' -t 'enet2can_e31 debug' -o 'debug\codex_build.log'
 ```
 
-期望结果：
+期望结果:
 
 ```text
 "debug\enet2can_e31.out" - 0 Error(s), 0 Warning(s).

@@ -25,6 +25,18 @@
 
 #define ETHERNET_LWIP_CLOCK_FREQ CLOCK_GetAipsPlatClkFreq()
 
+/*
+ * The customer needs both DHCP and a fixed IP. DHCP is the default; set
+ * ETHERNET_LWIP_USE_DHCP to 0 (e.g. in the build defines) to bring the board up
+ * with the static address below so it is reachable on a network without DHCP.
+ */
+#ifndef ETHERNET_LWIP_USE_DHCP
+#define ETHERNET_LWIP_USE_DHCP 1
+#endif
+#define ETHERNET_LWIP_STATIC_IP "192.168.8.50"
+#define ETHERNET_LWIP_STATIC_MASK "255.255.255.0"
+#define ETHERNET_LWIP_STATIC_GW "192.168.8.1"
+
 extern phy_lan8741_resource_t g_phy_resource;
 
 static phy_handle_t s_phyHandle;
@@ -61,6 +73,7 @@ static void ethernet_lwip_link_callback(struct netif *netif,
     }
 }
 
+#if ETHERNET_LWIP_USE_DHCP
 static void ethernet_lwip_update_dhcp_status(void)
 {
     struct dhcp *dhcp = netif_dhcp_data(&s_netif);
@@ -91,6 +104,7 @@ static void ethernet_lwip_update_dhcp_status(void)
         }
     }
 }
+#endif /* ETHERNET_LWIP_USE_DHCP */
 
 bool ethernet_lwip_init(void)
 {
@@ -116,6 +130,7 @@ bool ethernet_lwip_init(void)
     lwip_init();
     netif_add_ext_callback(&s_linkStatusCallbackInfo, ethernet_lwip_link_callback);
 
+#if ETHERNET_LWIP_USE_DHCP
     if (netif_add(&s_netif, NULL, NULL, NULL, &enetConfig, ethernetif0_init, ethernet_input) == NULL)
     {
         PRINTF("Ethernet: netif add failed\r\n");
@@ -134,6 +149,33 @@ bool ethernet_lwip_init(void)
     s_initialized = true;
     PRINTF("Ethernet: DHCP enabled\r\n");
     ethernet_lwip_update_dhcp_status();
+#else
+    {
+        ip4_addr_t ipAddr;
+        ip4_addr_t netMask;
+        ip4_addr_t gateway;
+
+        (void)ip4addr_aton(ETHERNET_LWIP_STATIC_IP, &ipAddr);
+        (void)ip4addr_aton(ETHERNET_LWIP_STATIC_MASK, &netMask);
+        (void)ip4addr_aton(ETHERNET_LWIP_STATIC_GW, &gateway);
+
+        if (netif_add(&s_netif, &ipAddr, &netMask, &gateway, &enetConfig, ethernetif0_init, ethernet_input) == NULL)
+        {
+            PRINTF("Ethernet: netif add failed\r\n");
+            return false;
+        }
+
+        netif_set_default(&s_netif);
+        netif_set_up(&s_netif);
+
+        s_status.linkUp = netif_is_link_up(&s_netif) ? true : false;
+        s_status.dhcpBound = true; /* static address: report "ready" via the same flag */
+        s_status.ipv4Addr = ipAddr.addr;
+    }
+
+    s_initialized = true;
+    PRINTF("Ethernet: static IP %s\r\n", ETHERNET_LWIP_STATIC_IP);
+#endif
 
     return true;
 }
@@ -147,7 +189,11 @@ void ethernet_lwip_poll(void)
 
     ethernetif_input(&s_netif);
     sys_check_timeouts();
+#if ETHERNET_LWIP_USE_DHCP
     ethernet_lwip_update_dhcp_status();
+#else
+    s_status.linkUp = netif_is_link_up(&s_netif) ? true : false;
+#endif
 }
 
 ethernet_lwip_status_t ethernet_lwip_get_status(void)

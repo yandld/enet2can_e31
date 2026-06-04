@@ -11,6 +11,7 @@
 static bool s_initialized;
 static uint32_t s_activeMask;
 static uint8_t s_nextTxChannel;
+static uint8_t s_peekOffset[CAN_GATEWAY_MAX_CHANNELS];
 static gateway_router_counter_t s_dataCounter;
 
 static bool gateway_router_channel_enabled(uint8_t channel)
@@ -100,7 +101,13 @@ uint32_t gateway_router_from_udp(const can_gateway_frame_t *frame)
     return status;
 }
 
-bool gateway_router_next_udp_frame(can_gateway_frame_t *frame)
+/*
+ * Backpressure-safe egress: peek frames round-robin WITHOUT consuming them, so the
+ * caller can build a UDP datagram and only commit (consume) the frames once the
+ * send succeeds. On send/alloc failure the frames stay queued and are retried,
+ * turning transient backpressure into bounded latency instead of frame loss.
+ */
+bool gateway_router_peek_udp_frame(can_gateway_frame_t *frame)
 {
     if (frame == NULL)
     {
@@ -111,15 +118,48 @@ bool gateway_router_next_udp_frame(can_gateway_frame_t *frame)
     {
         uint8_t channel = (uint8_t)((s_nextTxChannel + offset) % CAN_GATEWAY_MAX_CHANNELS);
 
-        if (can_service_read(channel, frame))
+        if (can_service_peek(channel, s_peekOffset[channel], frame))
         {
+            s_peekOffset[channel]++;
             s_nextTxChannel = (uint8_t)((channel + 1U) % CAN_GATEWAY_MAX_CHANNELS);
-            s_dataCounter.tx++;
             return true;
         }
     }
 
     return false;
+}
+
+void gateway_router_commit_peeked(void)
+{
+    for (uint8_t channel = 0U; channel < CAN_GATEWAY_MAX_CHANNELS; channel++)
+    {
+        if (s_peekOffset[channel] > 0U)
+        {
+            s_dataCounter.tx += s_peekOffset[channel];
+            can_service_consume(channel, s_peekOffset[channel]);
+            s_peekOffset[channel] = 0U;
+        }
+    }
+}
+
+void gateway_router_reset_peek(void)
+{
+    for (uint8_t channel = 0U; channel < CAN_GATEWAY_MAX_CHANNELS; channel++)
+    {
+        s_peekOffset[channel] = 0U;
+    }
+}
+
+uint16_t gateway_router_pending(void)
+{
+    uint16_t total = 0U;
+
+    for (uint8_t channel = 0U; channel < CAN_GATEWAY_MAX_CHANNELS; channel++)
+    {
+        total += can_service_rx_available(channel);
+    }
+
+    return total;
 }
 
 gateway_router_snapshot_t gateway_router_get_snapshot(void)

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Shared SocketCAN-first gateway protocol helpers."""
+"""Shared SocketCAN-first gateway protocol helpers.
+
+Wire format v3: variable-length frame records.
+  packet = header (16 bytes) + N frame records
+  record = 16-byte fixed head <BBBBIII> {channel,flags,dlc,reserved,can_id,timestamp,status}
+           followed by wire_data_len(flags, dlc) payload bytes (0..64).
+"""
 
 from __future__ import annotations
 
@@ -9,10 +15,10 @@ from typing import Iterable
 
 
 MAGIC = 0x53434757  # "SCGW"
-VERSION = 2
+VERSION = 3
 MAX_CHANNELS = 6
 MAX_DATA_LEN = 64
-MAX_FRAMES_PER_PACKET = 8
+MAX_FRAMES_PER_PACKET = 16
 DATA_PORT = 50000
 CONTROL_PORT = 50001
 
@@ -35,7 +41,22 @@ STATUS_NO_SESSION = 0x00000040
 STATUS_PARSE_ERROR = 0x00000080
 
 PACKET_HEADER = struct.Struct("<IBBHII")
-FRAME_RECORD = struct.Struct("<BBBBIII64s")
+# 16-byte fixed head of each frame record; payload follows, variable length.
+FRAME_HEAD = struct.Struct("<BBBBIII")
+FRAME_HEAD_SIZE = FRAME_HEAD.size  # 16
+MAX_FRAME_RECORD = FRAME_HEAD_SIZE + MAX_DATA_LEN
+MAX_PACKET_BYTES = PACKET_HEADER.size + MAX_FRAMES_PER_PACKET * MAX_FRAME_RECORD
+
+
+def wire_data_len(flags: int, dlc: int) -> int:
+    """Number of payload bytes carried on the wire for this frame.
+
+    Mirrors the firmware: CAN FD uses the DLC->length table, Classic CAN is
+    capped at 8 bytes. Both ends MUST agree so variable records stay aligned.
+    """
+    if flags & FLAG_FD:
+        return dlc_to_len(dlc)
+    return min(dlc, 8)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,30 +74,40 @@ class GatewayFrame:
             raise ValueError(f"invalid channel: {self.channel}")
         if not 0 <= self.dlc <= 15:
             raise ValueError(f"invalid DLC: {self.dlc}")
-        payload = self.data[:MAX_DATA_LEN].ljust(MAX_DATA_LEN, b"\x00")
-        return FRAME_RECORD.pack(
-            self.channel,
-            self.flags,
-            self.dlc,
-            0,
-            self.can_id,
-            self.timestamp,
-            self.status,
-            payload,
+        length = wire_data_len(self.flags, self.dlc)
+        payload = self.data[:length].ljust(length, b"\x00")
+        head = FRAME_HEAD.pack(
+            self.channel, self.flags, self.dlc, 0, self.can_id, self.timestamp, self.status
         )
+        return head + payload
 
     @classmethod
-    def unpack(cls, payload: bytes) -> "GatewayFrame":
-        if len(payload) != FRAME_RECORD.size:
-            raise ValueError(f"invalid frame size: {len(payload)}")
-        channel, flags, dlc, _reserved, can_id, timestamp, status, data = FRAME_RECORD.unpack(payload)
+    def unpack_from(cls, buffer: bytes, offset: int) -> tuple["GatewayFrame", int]:
+        """Parse one variable-length record at offset; return (frame, next_offset)."""
+        if offset + FRAME_HEAD_SIZE > len(buffer):
+            raise ValueError("truncated frame head")
+        channel, flags, dlc, _reserved, can_id, timestamp, status = FRAME_HEAD.unpack_from(buffer, offset)
         if channel >= MAX_CHANNELS:
             raise ValueError(f"invalid channel: {channel}")
         if dlc > 15:
             raise ValueError(f"invalid DLC: {dlc}")
-        length = dlc_to_len(dlc) if (flags & FLAG_FD) else min(dlc, 8)
-        return cls(channel=channel, flags=flags, dlc=dlc, can_id=can_id,
-                   timestamp=timestamp, status=status, data=data[:length])
+        length = wire_data_len(flags, dlc)
+        start = offset + FRAME_HEAD_SIZE
+        end = start + length
+        if end > len(buffer):
+            raise ValueError("truncated frame payload")
+        return (
+            cls(channel=channel, flags=flags, dlc=dlc, can_id=can_id,
+                timestamp=timestamp, status=status, data=buffer[start:end]),
+            end,
+        )
+
+    @classmethod
+    def unpack(cls, payload: bytes) -> "GatewayFrame":
+        frame, consumed = cls.unpack_from(payload, 0)
+        if consumed != len(payload):
+            raise ValueError(f"trailing bytes in frame record: {len(payload) - consumed}")
+        return frame
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,14 +139,13 @@ class GatewayPacket:
             raise ValueError(f"unsupported packet type: {packet_type}")
         if frame_count > MAX_FRAMES_PER_PACKET:
             raise ValueError(f"too many frames: {frame_count}")
-        expected_len = PACKET_HEADER.size + frame_count * FRAME_RECORD.size
-        if len(packet) != expected_len:
-            raise ValueError(f"invalid packet size: {len(packet)} expected {expected_len}")
         frames = []
         offset = PACKET_HEADER.size
         for _ in range(frame_count):
-            frames.append(GatewayFrame.unpack(packet[offset:offset + FRAME_RECORD.size]))
-            offset += FRAME_RECORD.size
+            frame, offset = GatewayFrame.unpack_from(packet, offset)
+            frames.append(frame)
+        if offset != len(packet):
+            raise ValueError(f"trailing bytes: {len(packet) - offset}")
         return cls(sequence=sequence, frames=frames, status=status, packet_type=packet_type)
 
 

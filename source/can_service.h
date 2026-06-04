@@ -13,11 +13,14 @@
 
 #define CAN_SERVICE_CHANNEL_COUNT 6U
 #define CAN_ACTIVE_MASK 0x3FU
-#define CAN_SERVICE_RX_RING_SIZE 32U
-#define CAN_SERVICE_TX_QUEUE_SIZE 32U
-#define CAN_SERVICE_USE_ENHANCED_RX_FIFO 1U
-#define CAN_SERVICE_EFIFO_BATCH_SIZE 1U
-#define CAN_SERVICE_EFIFO_WATERMARK 0U
+#define CAN_SERVICE_RX_RING_SIZE 64U
+#define CAN_SERVICE_TX_QUEUE_SIZE 64U
+/* RX slots reserved so error events are never starved by data frames. */
+#define CAN_SERVICE_RX_ERROR_HEADROOM 4U
+/* Max frames drained from one channel's RX mailbox bank per poll pass. */
+#define CAN_SERVICE_RX_DRAIN_MAX 48U
+/* Max TX message buffers per channel (all channels use 2). */
+#define CAN_SERVICE_MAX_TX_MB 2U
 
 #define CAN_BITRATE 1000000U
 #define CAN_USE_CANFD 1
@@ -72,9 +75,16 @@ typedef struct
 {
     bool enabled;
     bool useFD;
+    bool enhancedRxFifo;
     can_service_state_t state;
     uint32_t bitRate;
     uint32_t bitRateFD;
+    uint32_t rxCapacity;
+    uint32_t txCapacity;
+    uint32_t rxDrainMax;
+    uint32_t rxHwSlots;
+    uint32_t txMbCount;
+    uint32_t rxMbCount;
     uint32_t rxCount;
     uint32_t txStartCount;
     uint32_t txDoneCount;
@@ -102,6 +112,9 @@ bool can_service_init(uint32_t activeMask);
 void can_service_poll(void);
 uint32_t can_service_send(uint8_t channel, const can_gateway_frame_t *frame);
 bool can_service_read(uint8_t channel, can_gateway_frame_t *frame);
+uint16_t can_service_rx_available(uint8_t channel);
+bool can_service_peek(uint8_t channel, uint16_t offset, can_gateway_frame_t *frame);
+void can_service_consume(uint8_t channel, uint16_t count);
 can_service_status_t can_service_get_status(uint8_t channel);
 can_service_config_t can_service_get_config(uint8_t channel);
 uint32_t can_service_set_config(uint8_t channel, const can_service_config_t *config);
