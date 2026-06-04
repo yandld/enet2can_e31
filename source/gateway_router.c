@@ -10,6 +10,7 @@
 
 static bool s_initialized;
 static uint32_t s_activeMask;
+static uint8_t s_nextTxChannel;
 static gateway_router_counter_t s_dataCounter;
 
 static bool gateway_router_channel_enabled(uint8_t channel)
@@ -24,8 +25,7 @@ static bool gateway_router_validate_frame(const can_gateway_frame_t *frame)
     bool isExtended;
     bool isFD;
 
-    if ((frame == NULL) || (frame->magic != CAN_GATEWAY_MAGIC) || (frame->version != CAN_GATEWAY_VERSION) ||
-        (frame->channel >= CAN_GATEWAY_MAX_CHANNELS) || (frame->dlc > CAN_FD_DLC) ||
+    if ((frame == NULL) || (frame->channel >= CAN_GATEWAY_MAX_CHANNELS) || (frame->dlc > CAN_FD_DLC) ||
         ((frame->flags & (uint8_t)~knownFlags) != 0U) || ((frame->flags & CAN_GATEWAY_FLAG_ERROR) != 0U))
     {
         return false;
@@ -61,6 +61,7 @@ bool gateway_router_init(uint32_t activeMask)
 
     memset(&s_dataCounter, 0, sizeof(s_dataCounter));
     s_activeMask = activeMask & ((1UL << CAN_GATEWAY_MAX_CHANNELS) - 1UL);
+    s_nextTxChannel = 0U;
     s_initialized = true;
 
     return true;
@@ -106,10 +107,13 @@ bool gateway_router_next_udp_frame(can_gateway_frame_t *frame)
         return false;
     }
 
-    for (uint8_t channel = 0U; channel < CAN_GATEWAY_MAX_CHANNELS; channel++)
+    for (uint8_t offset = 0U; offset < CAN_GATEWAY_MAX_CHANNELS; offset++)
     {
+        uint8_t channel = (uint8_t)((s_nextTxChannel + offset) % CAN_GATEWAY_MAX_CHANNELS);
+
         if (can_service_read(channel, frame))
         {
+            s_nextTxChannel = (uint8_t)((channel + 1U) % CAN_GATEWAY_MAX_CHANNELS);
             s_dataCounter.tx++;
             return true;
         }
@@ -142,21 +146,27 @@ can_service_config_t gateway_router_get_config(uint8_t channel)
     return can_service_get_config(channel);
 }
 
-uint32_t gateway_router_set_can0_config(const can_service_config_t *config)
+uint32_t gateway_router_set_config(uint8_t channel, const can_service_config_t *config)
 {
-    uint32_t status = can_service_set_config(0U, config);
+    uint32_t status = can_service_set_config(channel, config);
 
     if ((status == CAN_SERVICE_CONFIG_OK) && (config != NULL))
     {
         if (config->enabled)
         {
-            s_activeMask |= 1UL;
+            s_activeMask |= (1UL << channel);
         }
         else
         {
-            s_activeMask &= ~1UL;
+            s_activeMask &= ~(1UL << channel);
         }
     }
 
     return status;
+}
+
+void gateway_router_reset_stats(void)
+{
+    memset(&s_dataCounter, 0, sizeof(s_dataCounter));
+    can_service_reset_stats();
 }

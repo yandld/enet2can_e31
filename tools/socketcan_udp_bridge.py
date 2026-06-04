@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Userspace SocketCAN to UDP bridge for the MCXE31B gateway protocol."""
+"""Bridge Linux SocketCAN interfaces to the MCXE31B UDP tunnel."""
 
 from __future__ import annotations
 
@@ -8,21 +8,30 @@ import dataclasses
 import selectors
 import socket
 import struct
-from typing import Sequence
+import subprocess
+import sys
+import time
+from typing import Iterable, Sequence
+
+from can_gateway_protocol import (
+    DATA_PORT,
+    FLAG_BRS,
+    FLAG_ERROR,
+    FLAG_EXTENDED_ID,
+    FLAG_FD,
+    FLAG_REMOTE,
+    FRAME_RECORD,
+    GatewayFrame,
+    GatewayPacket,
+    MAX_FRAMES_PER_PACKET,
+    pack_frames,
+    dlc_to_len,
+    len_to_dlc,
+)
 
 
-MAGIC = 0x43474644
-VERSION = 1
 MAX_CHANNELS = 6
 MAX_DATA_LEN = 64
-DATA_PORT = 50000
-STATUS_PORT = 50001
-
-FLAG_FD = 0x01
-FLAG_BRS = 0x02
-FLAG_EXTENDED_ID = 0x04
-FLAG_REMOTE = 0x08
-FLAG_ERROR = 0x10
 
 CAN_EFF_FLAG = 0x80000000
 CAN_RTR_FLAG = 0x40000000
@@ -32,66 +41,111 @@ CAN_EFF_MASK = 0x1FFFFFFF
 
 CANFD_BRS = 0x01
 
-GATEWAY_FRAME = struct.Struct("<IBBBBIII64s")
 CAN_CLASSIC_FRAME = struct.Struct("<IB3x8s")
 CANFD_FRAME = struct.Struct("<IBB2x64s")
 
 
-@dataclasses.dataclass(frozen=True)
-class GatewayFrame:
-    channel: int
-    flags: int
-    dlc: int
-    can_id: int
-    timestamp: int = 0
-    status: int = 0
-    data: bytes = b""
+@dataclasses.dataclass
+class BridgeStats:
+    channel_count: int = MAX_CHANNELS
+    start_time: float = dataclasses.field(default_factory=time.monotonic)
+    udp_rx_packets: int = 0
+    udp_rx_frames: int = 0
+    udp_tx_packets: int = 0
+    udp_tx_frames: int = 0
+    udp_sequence_loss: int = 0
+    udp_sequence_reorder: int = 0
+    udp_parse_errors: int = 0
+    udp_send_errors: int = 0
+    can_recv_errors: int = 0
+    can_send_errors: int = 0
+    last_udp_sequence: int | None = None
+    last_report_time: float = 0.0
 
-    def pack(self) -> bytes:
-        payload = self.data[:MAX_DATA_LEN].ljust(MAX_DATA_LEN, b"\x00")
-        return GATEWAY_FRAME.pack(
-            MAGIC,
-            VERSION,
-            self.channel,
-            self.flags,
-            self.dlc,
-            self.can_id,
-            self.timestamp,
-            self.status,
-            payload,
+    def __post_init__(self) -> None:
+        self.can_rx_frames = [0] * self.channel_count
+        self.can_tx_frames = [0] * self.channel_count
+        self.last_report_time = self.start_time
+
+    def record_udp_rx(self, packet: GatewayPacket) -> None:
+        sequence = int(packet.sequence)
+        if self.last_udp_sequence is not None:
+            expected = self.last_udp_sequence + 1
+            if sequence > expected:
+                self.udp_sequence_loss += sequence - expected
+            elif sequence < expected:
+                self.udp_sequence_reorder += 1
+        self.last_udp_sequence = sequence
+        self.udp_rx_packets += 1
+        self.udp_rx_frames += len(packet.frames)
+
+    def record_udp_tx(self, packet_count: int, frame_count: int) -> None:
+        self.udp_tx_packets += packet_count
+        self.udp_tx_frames += frame_count
+
+    def record_udp_parse_error(self) -> None:
+        self.udp_parse_errors += 1
+
+    def record_udp_send_error(self) -> None:
+        self.udp_send_errors += 1
+
+    def record_can_rx(self, channel: int) -> None:
+        if 0 <= channel < self.channel_count:
+            self.can_rx_frames[channel] += 1
+
+    def record_can_tx(self, channel: int) -> None:
+        if 0 <= channel < self.channel_count:
+            self.can_tx_frames[channel] += 1
+
+    def record_can_recv_error(self) -> None:
+        self.can_recv_errors += 1
+
+    def record_can_send_error(self) -> None:
+        self.can_send_errors += 1
+
+    def should_report(self, now: float, interval: float) -> bool:
+        if interval <= 0:
+            return False
+        if (now - self.last_report_time) < interval:
+            return False
+        self.last_report_time = now
+        return True
+
+    def format_report(self, now: float | None = None) -> str:
+        if now is None:
+            now = time.monotonic()
+        elapsed = max(now - self.start_time, 0.000001)
+        can_rx = ",".join(str(value) for value in self.can_rx_frames)
+        can_tx = ",".join(str(value) for value in self.can_tx_frames)
+        return (
+            f"stats elapsed={elapsed:.1f}s "
+            f"udp_rx_packets={self.udp_rx_packets} udp_rx_frames={self.udp_rx_frames} "
+            f"udp_tx_packets={self.udp_tx_packets} udp_tx_frames={self.udp_tx_frames} "
+            f"seq_loss={self.udp_sequence_loss} seq_reorder={self.udp_sequence_reorder} "
+            f"udp_parse_errors={self.udp_parse_errors} udp_send_errors={self.udp_send_errors} "
+            f"can_recv_errors={self.can_recv_errors} can_send_errors={self.can_send_errors} "
+            f"udp_rx_fps={self.udp_rx_frames / elapsed:.1f} udp_tx_fps={self.udp_tx_frames / elapsed:.1f} "
+            f"can_rx=[{can_rx}] can_tx=[{can_tx}]"
         )
 
-    @classmethod
-    def unpack(cls, packet: bytes) -> "GatewayFrame":
-        if len(packet) != GATEWAY_FRAME.size:
-            raise ValueError(f"invalid packet size: {len(packet)}")
 
-        magic, version, channel, flags, dlc, can_id, timestamp, status, data = GATEWAY_FRAME.unpack(packet)
-        if magic != MAGIC:
-            raise ValueError(f"invalid magic: 0x{magic:08x}")
-        if version != VERSION:
-            raise ValueError(f"unsupported version: {version}")
-        if channel >= MAX_CHANNELS:
-            raise ValueError(f"invalid channel: {channel}")
-
-        length = dlc_to_len(dlc) if (flags & FLAG_FD) else min(dlc, 8)
-        return cls(channel, flags, dlc, can_id, timestamp, status, data[:length])
+def socketcan_workflow_text() -> str:
+    return (
+        "SocketCAN workflow:\n"
+        "  sudo modprobe vcan\n"
+        "  sudo ip link add dev vcan0 type vcan\n"
+        "  sudo ip link set up vcan0\n"
+        "  candump vcan0\n"
+        "  cangen vcan0 -g 1 -L 64 -f\n"
+        "  canplayer vcan0=can0 -I trace.log\n"
+    )
 
 
-def len_to_dlc(length: int) -> int:
-    if length <= 8:
-        return length
-    for dlc, size in ((9, 12), (10, 16), (11, 20), (12, 24), (13, 32), (14, 48), (15, 64)):
-        if length <= size:
-            return dlc
-    raise ValueError(f"CAN FD payload too large: {length}")
-
-
-def dlc_to_len(dlc: int) -> int:
-    table = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64)
-    if dlc >= len(table):
-        raise ValueError(f"invalid DLC: {dlc}")
-    return table[dlc]
+def setup_vcan(interfaces: Iterable[str]) -> None:
+    subprocess.run(["sudo", "modprobe", "vcan"], check=True)
+    for interface in interfaces:
+        subprocess.run(["sudo", "ip", "link", "add", "dev", interface, "type", "vcan"], check=False)
+        subprocess.run(["sudo", "ip", "link", "set", "up", interface], check=True)
 
 
 def open_can_socket(interface: str) -> socket.socket:
@@ -148,46 +202,119 @@ def can_from_gateway(frame: GatewayFrame) -> bytes:
     return CAN_CLASSIC_FRAME.pack(can_id, length, frame.data[:length].ljust(8, b"\x00"))
 
 
-def run_bridge(can_interfaces: Sequence[str], remote_host: str, remote_port: int, local_port: int) -> None:
+def make_gateway_packet(sequence: int, frames: Sequence[GatewayFrame]) -> bytes:
+    return pack_frames(sequence, frames)
+
+
+def send_gateway_batches(sock: socket.socket,
+                         remote: tuple[str, int],
+                         sequence: int,
+                         frames: Sequence[GatewayFrame],
+                         stats: BridgeStats | None = None) -> int:
+    for offset in range(0, len(frames), MAX_FRAMES_PER_PACKET):
+        batch = frames[offset:offset + MAX_FRAMES_PER_PACKET]
+        try:
+            sock.sendto(make_gateway_packet(sequence, batch), remote)
+        except OSError:
+            if stats is not None:
+                stats.record_udp_send_error()
+            continue
+        if stats is not None:
+            stats.record_udp_tx(packet_count=1, frame_count=len(batch))
+        sequence += 1
+    return sequence
+
+
+def run_bridge(can_interfaces: Sequence[str],
+               remote_host: str,
+               remote_port: int,
+               local_port: int,
+               stats_interval: float = 0.0) -> None:
     selector = selectors.DefaultSelector()
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_sock.bind(("0.0.0.0", local_port))
-    udp_sock.setblocking(False)
-    selector.register(udp_sock, selectors.EVENT_READ, ("udp", None))
-
     can_socks = []
-    for channel, interface in enumerate(can_interfaces):
-        can_sock = open_can_socket(interface)
-        can_socks.append(can_sock)
-        selector.register(can_sock, selectors.EVENT_READ, ("can", channel))
+    stats = BridgeStats(channel_count=len(can_interfaces))
+    try:
+        udp_sock.bind(("0.0.0.0", local_port))
+        udp_sock.setblocking(False)
+        selector.register(udp_sock, selectors.EVENT_READ, ("udp", None))
 
-    remote = (remote_host, remote_port)
-    while True:
-        for key, _ in selector.select():
-            kind, channel = key.data
-            if kind == "can":
-                packet = key.fileobj.recv(CANFD_FRAME.size)
-                udp_sock.sendto(gateway_from_can(channel, packet).pack(), remote)
-            else:
-                packet, _ = udp_sock.recvfrom(GATEWAY_FRAME.size)
-                frame = GatewayFrame.unpack(packet)
-                if frame.channel >= len(can_socks):
-                    continue
-                can_socks[frame.channel].send(can_from_gateway(frame))
+        for channel, interface in enumerate(can_interfaces):
+            can_sock = open_can_socket(interface)
+            can_socks.append(can_sock)
+            selector.register(can_sock, selectors.EVENT_READ, ("can", channel))
+
+        remote = (remote_host, remote_port)
+        tx_sequence = 0
+        udp_sock.sendto(make_gateway_packet(tx_sequence, []), remote)
+        stats.record_udp_tx(packet_count=1, frame_count=0)
+        tx_sequence += 1
+
+        while True:
+            tx_frames = []
+            for key, _ in selector.select():
+                kind, channel = key.data
+                if kind == "can":
+                    try:
+                        packet = key.fileobj.recv(CANFD_FRAME.size)
+                        tx_frames.append(gateway_from_can(channel, packet))
+                        stats.record_can_rx(channel)
+                    except (OSError, ValueError) as exc:
+                        stats.record_can_recv_error()
+                        print(f"drop can{channel}: {exc}", file=sys.stderr)
+                else:
+                    packet, _ = udp_sock.recvfrom(FRAME_RECORD.size * 8 + 64)
+                    try:
+                        gateway_packet = GatewayPacket.unpack(packet)
+                    except ValueError as exc:
+                        stats.record_udp_parse_error()
+                        print(f"drop udp: {exc}", file=sys.stderr)
+                        continue
+                    stats.record_udp_rx(gateway_packet)
+                    for frame in gateway_packet.frames:
+                        if frame.channel < len(can_socks):
+                            try:
+                                can_socks[frame.channel].send(can_from_gateway(frame))
+                                stats.record_can_tx(frame.channel)
+                            except OSError as exc:
+                                stats.record_can_send_error()
+                                print(f"drop can{frame.channel}: {exc}", file=sys.stderr)
+            if tx_frames:
+                tx_sequence = send_gateway_batches(udp_sock, remote, tx_sequence, tx_frames, stats)
+            now = time.monotonic()
+            if stats.should_report(now, stats_interval):
+                print(stats.format_report(now), file=sys.stderr)
+    finally:
+        selector.close()
+        udp_sock.close()
+        for can_sock in can_socks:
+            can_sock.close()
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=socketcan_workflow_text(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--remote-host", required=True, help="MCU IPv4 address")
     parser.add_argument("--remote-port", type=int, default=DATA_PORT)
     parser.add_argument("--local-port", type=int, default=DATA_PORT)
-    parser.add_argument("--can", nargs="+", default=[f"can{i}" for i in range(MAX_CHANNELS)])
-    return parser.parse_args()
+    parser.add_argument("--can", nargs="+", default=["vcan0"], help="SocketCAN/vcan interfaces mapped to channels")
+    parser.add_argument("--setup-vcan", action="store_true", help="create and bring up the requested vcan interfaces")
+    parser.add_argument("--stats-interval", type=float, default=0.0,
+                        help="print bridge throughput/error stats to stderr every N seconds; 0 disables reports")
+    return parser
 
 
 def main() -> None:
-    args = parse_args()
-    run_bridge(args.can, args.remote_host, args.remote_port, args.local_port)
+    args = build_parser().parse_args()
+    try:
+        if args.setup_vcan:
+            setup_vcan(args.can)
+        run_bridge(args.can, args.remote_host, args.remote_port, args.local_port, getattr(args, "stats_interval", 0.0))
+    except KeyboardInterrupt as exc:
+        raise SystemExit(0) from exc
 
 
 if __name__ == "__main__":

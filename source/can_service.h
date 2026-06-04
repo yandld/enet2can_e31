@@ -1,5 +1,5 @@
 /*
- * can_service.h - CAN service boundary for the CAN0-first gateway slice
+ * can_service.h - CAN service boundary for the six-channel gateway
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -12,7 +12,7 @@
 #include "can_gateway_protocol.h"
 
 #define CAN_SERVICE_CHANNEL_COUNT 6U
-#define CAN_ACTIVE_MASK 0x01U
+#define CAN_ACTIVE_MASK 0x3FU
 #define CAN_SERVICE_RX_RING_SIZE 32U
 #define CAN_SERVICE_TX_QUEUE_SIZE 32U
 #define CAN_SERVICE_USE_ENHANCED_RX_FIFO 1U
@@ -106,6 +106,7 @@ can_service_status_t can_service_get_status(uint8_t channel);
 can_service_config_t can_service_get_config(uint8_t channel);
 uint32_t can_service_set_config(uint8_t channel, const can_service_config_t *config);
 uint32_t can_service_get_last_config_status(void);
+void can_service_reset_stats(void);
 void can_service_tick_1ms(void);
 
 #endif /* CAN_SERVICE_H_ */

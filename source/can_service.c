@@ -1,5 +1,5 @@
 /*
- * can_service.c - CAN service boundary for the CAN0-first gateway slice
+ * can_service.c - CAN service boundary for the six-channel gateway
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -20,11 +20,24 @@
 #define RX_MB_IDX 1
 #define FD_PAYLOAD_SIZE kFLEXCAN_64BperMB
 #define CAN_SERVICE_ENABLE_PERIODIC_TX 0U
+#define CAN_SERVICE_ENABLE_PERIODIC_STATUS 0U
+#define CAN_SERVICE_ENABLE_RUNTIME_LOGS 0U
+#define CAN_SERVICE_ERROR_POLL_PERIOD_MS 10U
 #define CAN_ERROR_WARNING_THRESHOLD 96U
 #define CAN_MIN_NOMINAL_BITRATE 50000U
 #define CAN_MAX_NOMINAL_BITRATE 1000000U
 #define CAN_MIN_DATA_BITRATE 500000U
 #define CAN_MAX_DATA_BITRATE 5000000U
+#define CAN_ERR_TX_TIMEOUT 0x00000001UL
+#define CAN_ERR_CRTL 0x00000004UL
+#define CAN_ERR_BUSOFF 0x00000040UL
+#define CAN_ERR_BUSERROR 0x00000080UL
+#define CAN_ERR_CRTL_RX_OVERFLOW 0x01U
+#define CAN_ERR_CRTL_TX_OVERFLOW 0x02U
+#define CAN_ERR_CRTL_RX_WARNING 0x04U
+#define CAN_ERR_CRTL_TX_WARNING 0x08U
+#define CAN_ERR_CRTL_RX_PASSIVE 0x10U
+#define CAN_ERR_CRTL_TX_PASSIVE 0x20U
 
 typedef struct
 {
@@ -49,9 +62,13 @@ typedef struct
     volatile bool rxDone;
     volatile bool rxFifoDone;
     volatile bool rxFifoRestartNeeded;
+    volatile bool errorFramePending;
+    volatile uint32_t pendingErrorCanId;
+    volatile uint8_t pendingErrorCtrl;
     uint32_t txCounter;
     uint32_t lastTxMs;
     uint32_t txStartMs;
+    uint32_t lastErrorPollMs;
 
     can_service_status_t status;
     can_gateway_frame_t rxRing[CAN_SERVICE_RX_RING_SIZE];
@@ -73,7 +90,9 @@ typedef struct
 } can_channel_t;
 
 static volatile uint32_t s_ms;
+#if CAN_SERVICE_ENABLE_PERIODIC_STATUS
 static uint32_t s_lastStatusMs;
+#endif
 static bool s_initialized;
 static uint32_t s_activeMask;
 static uint32_t s_lastConfigStatus = CAN_SERVICE_CONFIG_OK;
@@ -98,6 +117,7 @@ static uint32_t s_enhancedRxFifoFilterTable[] =
 };
 
 static void can_init_channel(can_channel_t *ch);
+static bool can_push_rx(can_channel_t *ch, const can_gateway_frame_t *frame);
 
 static uint8_t dlc_to_len(uint8_t dlc)
 {
@@ -132,6 +152,16 @@ static bool can_channel_enabled(uint8_t channel)
     return (channel < CAN_SERVICE_CHANNEL_COUNT) && ((s_activeMask & (1UL << channel)) != 0U);
 }
 
+static bool can_channel_use_enhanced_rx_fifo(const can_channel_t *ch)
+{
+#if CAN_SERVICE_USE_ENHANCED_RX_FIFO && defined(FSL_FEATURE_FLEXCAN_INSTANCE_HAS_ENHANCED_RX_FIFOn)
+    return ch->useFD && (FSL_FEATURE_FLEXCAN_INSTANCE_HAS_ENHANCED_RX_FIFOn(ch->base) == 1);
+#else
+    (void)ch;
+    return false;
+#endif
+}
+
 static can_service_config_t can_default_config(bool enabled)
 {
     can_service_config_t config;
@@ -163,6 +193,10 @@ static void can_reset_queues(can_channel_t *ch)
     ch->rxDone = false;
     ch->rxFifoDone = false;
     ch->rxFifoRestartNeeded = false;
+    ch->errorFramePending = false;
+    ch->pendingErrorCanId = 0U;
+    ch->pendingErrorCtrl = 0U;
+    ch->lastErrorPollMs = 0U;
     ch->txDone = true;
 }
 
@@ -179,7 +213,7 @@ static void can_sync_channel_from_config(can_channel_t *ch)
 
 static uint32_t can_validate_config(uint8_t channel, const can_service_config_t *config)
 {
-    if (channel != 0U)
+    if (channel >= CAN_SERVICE_CHANNEL_COUNT)
     {
         return CAN_SERVICE_CONFIG_UNSUPPORTED_CHANNEL;
     }
@@ -228,7 +262,7 @@ static void can_deinit_channel(can_channel_t *ch)
     }
 
 #if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (ch->useFD)
+    if (can_channel_use_enhanced_rx_fifo(ch))
     {
         FLEXCAN_TransferAbortReceiveEnhancedFifo(ch->base, &ch->handle);
     }
@@ -304,7 +338,7 @@ static void can_start_rx(can_channel_t *ch)
     ch->rxDone = false;
 
 #if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (ch->useFD)
+    if (can_channel_use_enhanced_rx_fifo(ch))
     {
         ch->rxFifoDone = false;
         ch->rxFifoXfer.framefd = &ch->rxFifoFrame[0];
@@ -333,9 +367,102 @@ static void can_start_rx(can_channel_t *ch)
     }
 }
 
+static uint8_t can_error_ctrl_bits(uint8_t txErr, uint8_t rxErr)
+{
+    uint8_t ctrl = 0U;
+
+    if (rxErr >= 128U)
+    {
+        ctrl |= CAN_ERR_CRTL_RX_PASSIVE;
+    }
+    else if (rxErr >= CAN_ERROR_WARNING_THRESHOLD)
+    {
+        ctrl |= CAN_ERR_CRTL_RX_WARNING;
+    }
+
+    if (txErr >= 128U)
+    {
+        ctrl |= CAN_ERR_CRTL_TX_PASSIVE;
+    }
+    else if (txErr >= CAN_ERROR_WARNING_THRESHOLD)
+    {
+        ctrl |= CAN_ERR_CRTL_TX_WARNING;
+    }
+
+    return ctrl;
+}
+
+static void can_read_error_counters(can_channel_t *ch, uint8_t *txErr, uint8_t *rxErr)
+{
+    uint8_t tx = 0U;
+    uint8_t rx = 0U;
+
+    FLEXCAN_GetBusErrCount(ch->base, &tx, &rx);
+    ch->status.txErrCounter = tx;
+    ch->status.rxErrCounter = rx;
+
+    if (txErr != NULL)
+    {
+        *txErr = tx;
+    }
+    if (rxErr != NULL)
+    {
+        *rxErr = rx;
+    }
+}
+
+static void can_queue_error_event(can_channel_t *ch, uint32_t canId, uint8_t ctrl)
+{
+    ch->pendingErrorCanId |= canId;
+    ch->pendingErrorCtrl |= ctrl;
+    ch->errorFramePending = true;
+}
+
+static bool can_push_error_frame(can_channel_t *ch, uint32_t canId, uint8_t ctrl)
+{
+    can_gateway_frame_t frame;
+
+    memset(&frame, 0, sizeof(frame));
+    frame.channel = ch->index;
+    frame.flags = CAN_GATEWAY_FLAG_ERROR;
+    frame.dlc = CAN_CLASSIC_DLC;
+    frame.can_id = canId;
+    frame.timestamp = s_ms;
+    frame.status = CAN_GATEWAY_STATUS_OK;
+    frame.data[1] = ctrl;
+    frame.data[6] = ch->status.txErrCounter;
+    frame.data[7] = ch->status.rxErrCounter;
+
+    return can_push_rx(ch, &frame);
+}
+
+static void can_flush_pending_error_frame(can_channel_t *ch)
+{
+    uint32_t canId;
+    uint8_t ctrl;
+
+    if (!ch->errorFramePending)
+    {
+        return;
+    }
+
+    canId = ch->pendingErrorCanId;
+    ctrl = ch->pendingErrorCtrl;
+
+    if (can_push_error_frame(ch, canId, ctrl))
+    {
+        ch->pendingErrorCanId = 0U;
+        ch->pendingErrorCtrl = 0U;
+        ch->errorFramePending = false;
+    }
+}
+
 static FLEXCAN_CALLBACK(can_callback)
 {
     can_channel_t *ch = (can_channel_t *)userData;
+    uint8_t txErr = 0U;
+    uint8_t rxErr = 0U;
+    uint8_t ctrl;
 
     switch (status)
     {
@@ -363,6 +490,7 @@ static FLEXCAN_CALLBACK(can_callback)
             ch->status.rxErrorCount++;
             ch->status.lastErrorStatus = (uint32_t)result;
             ch->rxDone = true;
+            can_queue_error_event(ch, CAN_ERR_CRTL, CAN_ERR_CRTL_RX_OVERFLOW);
             break;
 
         case kStatus_FLEXCAN_RxFifoOverflow:
@@ -370,6 +498,7 @@ static FLEXCAN_CALLBACK(can_callback)
             ch->status.rxErrorCount++;
             ch->status.lastErrorStatus = (uint32_t)result;
             ch->rxFifoRestartNeeded = true;
+            can_queue_error_event(ch, CAN_ERR_CRTL, CAN_ERR_CRTL_RX_OVERFLOW);
             break;
 
         case kStatus_FLEXCAN_RxFifoWarning:
@@ -385,9 +514,19 @@ static FLEXCAN_CALLBACK(can_callback)
             break;
 
         case kStatus_FLEXCAN_ErrorStatus:
+            can_read_error_counters(ch, &txErr, &rxErr);
+            ctrl = can_error_ctrl_bits(txErr, rxErr);
             if (((uint32_t)result & (uint32_t)kFLEXCAN_BusOffIntFlag) != 0U)
             {
                 ch->status.busOffCount++;
+                can_queue_error_event(ch, CAN_ERR_BUSOFF | CAN_ERR_BUSERROR, ctrl);
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
+                PRINTF("CAN%d: bus off flags=0x%x\r\n", ch->index, (unsigned)result);
+#endif
+            }
+            else
+            {
+                can_queue_error_event(ch, CAN_ERR_BUSERROR | CAN_ERR_CRTL, ctrl);
             }
             ch->status.txErrorCount++;
             ch->status.lastErrorStatus = (uint32_t)result;
@@ -461,15 +600,22 @@ static void can_init_channel(can_channel_t *ch)
         FLEXCAN_SetFDTxMbConfig(ch->base, TX_MB_IDX, true);
 
 #if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-        memset(&fifoCfg, 0, sizeof(fifoCfg));
-        fifoCfg.idFilterTable = s_enhancedRxFifoFilterTable;
-        fifoCfg.idFilterPairNum = 2U;
-        fifoCfg.extendIdFilterNum = 1U;
-        fifoCfg.fifoWatermark = CAN_SERVICE_EFIFO_WATERMARK;
-        fifoCfg.dmaPerReadLength = kFLEXCAN_19WordPerRead;
-        fifoCfg.priority = kFLEXCAN_RxFifoPrioHigh;
-        FLEXCAN_SetEnhancedRxFifoConfig(ch->base, &fifoCfg, true);
+        if (can_channel_use_enhanced_rx_fifo(ch))
+        {
+            memset(&fifoCfg, 0, sizeof(fifoCfg));
+            fifoCfg.idFilterTable = s_enhancedRxFifoFilterTable;
+            fifoCfg.idFilterPairNum = 2U;
+            fifoCfg.extendIdFilterNum = 1U;
+            fifoCfg.fifoWatermark = CAN_SERVICE_EFIFO_WATERMARK;
+            fifoCfg.dmaPerReadLength = kFLEXCAN_19WordPerRead;
+            fifoCfg.priority = kFLEXCAN_RxFifoPrioHigh;
+            FLEXCAN_SetEnhancedRxFifoConfig(ch->base, &fifoCfg, true);
+        }
+        else
 #endif
+        {
+            FLEXCAN_SetFDRxMbConfig(ch->base, RX_MB_IDX, &mbRxCfg, true);
+        }
     }
     else
     {
@@ -482,18 +628,22 @@ static void can_init_channel(can_channel_t *ch)
 
 static bool can_validate_tx_frame(const can_channel_t *ch, const can_gateway_frame_t *frame)
 {
-    uint8_t dataLen = dlc_to_len(frame->dlc);
-    bool isExtended = ((frame->flags & CAN_GATEWAY_FLAG_EXTENDED_ID) != 0U);
-    bool isFD = ((frame->flags & CAN_GATEWAY_FLAG_FD) != 0U);
     uint8_t knownFlags = CAN_GATEWAY_FLAG_FD | CAN_GATEWAY_FLAG_BRS | CAN_GATEWAY_FLAG_EXTENDED_ID |
-                         CAN_GATEWAY_FLAG_REMOTE | CAN_GATEWAY_FLAG_ERROR;
+                          CAN_GATEWAY_FLAG_REMOTE | CAN_GATEWAY_FLAG_ERROR;
+    bool isExtended;
+    bool isFD;
+    uint8_t dataLen;
 
-    if ((frame->magic != CAN_GATEWAY_MAGIC) || (frame->version != CAN_GATEWAY_VERSION) ||
-        (frame->channel >= CAN_SERVICE_CHANNEL_COUNT) || (frame->dlc > CAN_FD_DLC) ||
-        ((frame->flags & CAN_GATEWAY_FLAG_ERROR) != 0U) || ((frame->flags & (uint8_t)~knownFlags) != 0U))
+    if ((ch == NULL) || (frame == NULL) || (frame->channel >= CAN_SERVICE_CHANNEL_COUNT) ||
+        (frame->dlc > CAN_FD_DLC) || ((frame->flags & CAN_GATEWAY_FLAG_ERROR) != 0U) ||
+        ((frame->flags & (uint8_t)~knownFlags) != 0U))
     {
         return false;
     }
+
+    isExtended = ((frame->flags & CAN_GATEWAY_FLAG_EXTENDED_ID) != 0U);
+    isFD = ((frame->flags & CAN_GATEWAY_FLAG_FD) != 0U);
+    dataLen = dlc_to_len(frame->dlc);
 
     if ((!isExtended && (frame->can_id > 0x7FFU)) || (isExtended && (frame->can_id > 0x1FFFFFFFUL)))
     {
@@ -521,6 +671,93 @@ static bool can_validate_tx_frame(const can_channel_t *ch, const can_gateway_fra
     }
 
     return true;
+}
+
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
+static const char *can_tx_reject_reason(const can_channel_t *ch, const can_gateway_frame_t *frame)
+{
+    uint8_t knownFlags = CAN_GATEWAY_FLAG_FD | CAN_GATEWAY_FLAG_BRS | CAN_GATEWAY_FLAG_EXTENDED_ID |
+                          CAN_GATEWAY_FLAG_REMOTE | CAN_GATEWAY_FLAG_ERROR;
+    bool isExtended;
+    bool isFD;
+    uint8_t dataLen;
+
+    if (ch == NULL)
+    {
+        return "channel-context";
+    }
+    if (frame == NULL)
+    {
+        return "null-frame";
+    }
+    if (frame->channel >= CAN_SERVICE_CHANNEL_COUNT)
+    {
+        return "channel";
+    }
+    if (frame->dlc > CAN_FD_DLC)
+    {
+        return "dlc";
+    }
+    if ((frame->flags & CAN_GATEWAY_FLAG_ERROR) != 0U)
+    {
+        return "error-frame";
+    }
+    if ((frame->flags & (uint8_t)~knownFlags) != 0U)
+    {
+        return "flags";
+    }
+
+    isExtended = ((frame->flags & CAN_GATEWAY_FLAG_EXTENDED_ID) != 0U);
+    isFD = ((frame->flags & CAN_GATEWAY_FLAG_FD) != 0U);
+    dataLen = dlc_to_len(frame->dlc);
+
+    if ((!isExtended && (frame->can_id > 0x7FFU)) || (isExtended && (frame->can_id > 0x1FFFFFFFUL)))
+    {
+        return "can-id";
+    }
+    if (!ch->useFD && isFD)
+    {
+        return "fd-disabled";
+    }
+    if (!isFD && (dataLen > CAN_CLASSIC_DLC))
+    {
+        return "classic-dlc";
+    }
+    if (isFD && ((frame->flags & CAN_GATEWAY_FLAG_REMOTE) != 0U))
+    {
+        return "fd-remote";
+    }
+    if (((frame->flags & CAN_GATEWAY_FLAG_BRS) != 0U) && !ch->config.brs)
+    {
+        return "brs-disabled";
+    }
+
+    return "unknown";
+}
+#endif
+
+static void can_log_tx_reject(const can_channel_t *ch, const can_gateway_frame_t *frame, const char *where)
+{
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
+    uint8_t index = (ch != NULL) ? ch->index : 0xFFU;
+    uint8_t frameChannel = (frame != NULL) ? frame->channel : 0xFFU;
+    uint32_t canId = (frame != NULL) ? frame->can_id : 0U;
+    uint8_t flags = (frame != NULL) ? frame->flags : 0U;
+    uint8_t dlc = (frame != NULL) ? frame->dlc : 0U;
+
+    PRINTF("CAN%d: TX reject at %s ch=%u id=0x%x flags=0x%x dlc=%u reason=%s\r\n",
+           index,
+           where,
+           (unsigned)frameChannel,
+           (unsigned)canId,
+           (unsigned)flags,
+           (unsigned)dlc,
+           can_tx_reject_reason(ch, frame));
+#else
+    (void)ch;
+    (void)frame;
+    (void)where;
+#endif
 }
 
 static bool can_prepare_tx_frame(can_channel_t *ch, const can_gateway_frame_t *frame, flexcan_mb_transfer_t *xfer)
@@ -578,6 +815,7 @@ static uint32_t can_start_tx(can_channel_t *ch, const can_gateway_frame_t *frame
     if (!can_prepare_tx_frame(ch, frame, &xfer))
     {
         ch->status.txErrorCount++;
+        can_log_tx_reject(ch, frame, "start");
         return CAN_GATEWAY_STATUS_INVALID_PACKET;
     }
 
@@ -598,7 +836,9 @@ static uint32_t can_start_tx(can_channel_t *ch, const can_gateway_frame_t *frame
         ch->txDone = true;
         ch->status.txErrorCount++;
         ch->status.lastErrorStatus = (uint32_t)status;
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
         PRINTF("CAN%d: TX start failed status=%d\r\n", ch->index, (int)status);
+#endif
         return CAN_GATEWAY_STATUS_CAN_TX_ERROR;
     }
 
@@ -612,6 +852,7 @@ static uint32_t can_enqueue_tx(can_channel_t *ch, const can_gateway_frame_t *fra
     if (!can_validate_tx_frame(ch, frame))
     {
         ch->status.txErrorCount++;
+        can_log_tx_reject(ch, frame, "enqueue");
         return CAN_GATEWAY_STATUS_INVALID_PACKET;
     }
 
@@ -620,9 +861,21 @@ static uint32_t can_enqueue_tx(can_channel_t *ch, const can_gateway_frame_t *fra
         ch->status.txDropCount++;
         if (ch->config.txDropPolicy == CAN_SERVICE_TX_DROP_NEWEST)
         {
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
+            PRINTF("CAN%d: TX queue full drop newest id=0x%x queued=%u\r\n",
+                   ch->index,
+                   (unsigned)frame->can_id,
+                   (unsigned)ch->txQueued);
+#endif
             return CAN_GATEWAY_STATUS_QUEUE_FULL;
         }
 
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
+        PRINTF("CAN%d: TX queue full drop oldest id=0x%x queued=%u\r\n",
+               ch->index,
+               (unsigned)ch->txQueue[ch->txTail].can_id,
+               (unsigned)ch->txQueued);
+#endif
         ch->txTail = (uint8_t)((ch->txTail + 1U) % CAN_SERVICE_TX_QUEUE_SIZE);
         ch->txQueued--;
     }
@@ -692,7 +945,10 @@ static void can_abort_timed_out_tx(can_channel_t *ch)
     ch->txDone = true;
     ch->status.txTimeoutCount++;
     ch->status.txErrorCount++;
+    can_queue_error_event(ch, CAN_ERR_TX_TIMEOUT, CAN_ERR_CRTL_TX_OVERFLOW);
+#if CAN_SERVICE_ENABLE_RUNTIME_LOGS
     PRINTF("CAN%d: TX timeout, abort pending frame\r\n", ch->index);
+#endif
 }
 
 static void can_send_periodic(can_channel_t *ch)
@@ -707,8 +963,6 @@ static void can_send_periodic(can_channel_t *ch)
     }
 
     memset(&frame, 0, sizeof(frame));
-    frame.magic = CAN_GATEWAY_MAGIC;
-    frame.version = CAN_GATEWAY_VERSION;
     frame.channel = ch->index;
     frame.flags = ch->useFD ? CAN_GATEWAY_FLAG_FD : 0U;
     if (ch->useFD && ch->config.brs)
@@ -767,8 +1021,6 @@ static void can_fill_rx_from_fd(can_channel_t *ch, const flexcan_fd_frame_t *rxF
     uint8_t dataLen;
 
     memset(frame, 0, sizeof(*frame));
-    frame->magic = CAN_GATEWAY_MAGIC;
-    frame->version = CAN_GATEWAY_VERSION;
     frame->channel = ch->index;
     frame->status = CAN_GATEWAY_STATUS_OK;
 
@@ -800,8 +1052,6 @@ static void can_fill_rx_from_classic(can_channel_t *ch, const flexcan_frame_t *r
     uint8_t dataLen;
 
     memset(frame, 0, sizeof(*frame));
-    frame->magic = CAN_GATEWAY_MAGIC;
-    frame->version = CAN_GATEWAY_VERSION;
     frame->channel = ch->index;
     frame->status = CAN_GATEWAY_STATUS_OK;
 
@@ -842,7 +1092,7 @@ static void can_handle_rx(can_channel_t *ch)
     can_gateway_frame_t frame;
 
 #if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (ch->useFD)
+    if (can_channel_use_enhanced_rx_fifo(ch))
     {
         for (uint8_t i = 0U; i < CAN_SERVICE_EFIFO_BATCH_SIZE; i++)
         {
@@ -876,12 +1126,9 @@ static void can_update_error_state(can_channel_t *ch)
     uint64_t flags;
     uint32_t faultState;
 
-    FLEXCAN_GetBusErrCount(ch->base, &txErr, &rxErr);
+    can_read_error_counters(ch, &txErr, &rxErr);
     flags = FLEXCAN_GetStatusFlags(ch->base);
     faultState = (uint32_t)((flags & (uint64_t)kFLEXCAN_FaultConfinementFlag) >> CAN_ESR1_FLTCONF_SHIFT);
-
-    ch->status.txErrCounter = txErr;
-    ch->status.rxErrCounter = rxErr;
 
     if (faultState >= 2U)
     {
@@ -905,7 +1152,7 @@ static void can_update_error_state(can_channel_t *ch)
 static void can_restart_rx_fifo(can_channel_t *ch)
 {
 #if CAN_SERVICE_USE_ENHANCED_RX_FIFO
-    if (ch->useFD)
+    if (can_channel_use_enhanced_rx_fifo(ch))
     {
         FLEXCAN_TransferAbortReceiveEnhancedFifo(ch->base, &ch->handle);
         ch->rxFifoDone = false;
@@ -917,6 +1164,7 @@ static void can_restart_rx_fifo(can_channel_t *ch)
 #endif
 }
 
+#if CAN_SERVICE_ENABLE_PERIODIC_STATUS
 static void can_print_status(const can_channel_t *ch)
 {
     PRINTF("CAN%d: status rx=%u tx_start=%u tx_done=%u txq=%u rxq=%u tx_drop=%u rx_drop=%u err=%u fifo_ovf=%u last=0x%x\r\n",
@@ -932,6 +1180,7 @@ static void can_print_status(const can_channel_t *ch)
            (unsigned)ch->status.rxFifoOverflowCount,
            (unsigned)ch->status.lastErrorStatus);
 }
+#endif
 
 bool can_service_init(uint32_t activeMask)
 {
@@ -972,12 +1221,15 @@ bool can_service_init(uint32_t activeMask)
 
         if (ch->useFD)
         {
-            PRINTF("CAN%d: enabled CAN FD %ukbps/%ukbps BRS %s TX=0x%x EFIFO batch=%u watermark=%u\r\n",
+            const char *rxPath = can_channel_use_enhanced_rx_fifo(ch) ? "efifo" : "mb";
+
+            PRINTF("CAN%d: enabled CAN FD %ukbps/%ukbps BRS %s TX=0x%x RX=%s batch=%u watermark=%u\r\n",
                    i,
                    (unsigned)(ch->bitRate / 1000U),
                    (unsigned)(ch->bitRateFD / 1000U),
                    ch->config.brs ? "on" : "off",
                    (unsigned)ch->txId,
+                   rxPath,
                    (unsigned)CAN_SERVICE_EFIFO_BATCH_SIZE,
                    (unsigned)CAN_SERVICE_EFIFO_WATERMARK);
         }
@@ -1010,7 +1262,11 @@ void can_service_poll(void)
             continue;
         }
 
-        can_update_error_state(ch);
+        if ((s_ms - ch->lastErrorPollMs) >= CAN_SERVICE_ERROR_POLL_PERIOD_MS)
+        {
+            ch->lastErrorPollMs = s_ms;
+            can_update_error_state(ch);
+        }
 
 #if CAN_SERVICE_ENABLE_PERIODIC_TX
         can_send_periodic(ch);
@@ -1033,8 +1289,11 @@ void can_service_poll(void)
         {
             can_handle_rx(ch);
         }
+
+        can_flush_pending_error_frame(ch);
     }
 
+#if CAN_SERVICE_ENABLE_PERIODIC_STATUS
     if ((s_ms - s_lastStatusMs) >= STATUS_PERIOD_MS)
     {
         s_lastStatusMs = s_ms;
@@ -1046,6 +1305,7 @@ void can_service_poll(void)
             }
         }
     }
+#endif
 }
 
 uint32_t can_service_send(uint8_t channel, const can_gateway_frame_t *frame)
@@ -1129,6 +1389,25 @@ uint32_t can_service_set_config(uint8_t channel, const can_service_config_t *con
 uint32_t can_service_get_last_config_status(void)
 {
     return s_lastConfigStatus;
+}
+
+void can_service_reset_stats(void)
+{
+    for (uint8_t i = 0U; i < CAN_SERVICE_CHANNEL_COUNT; i++)
+    {
+        can_channel_t *ch = &s_can[i];
+        can_service_state_t state = ch->status.state;
+
+        memset(&ch->status, 0, sizeof(ch->status));
+        ch->status.enabled = ch->config.enabled;
+        ch->status.useFD = ch->config.useFD;
+        ch->status.state = state;
+        ch->status.bitRate = ch->config.bitRate;
+        ch->status.bitRateFD = ch->config.useFD ? ch->config.bitRateFD : 0U;
+        ch->status.rxQueued = ch->rxQueued;
+        ch->status.txQueued = ch->txQueued;
+    }
+    s_lastConfigStatus = CAN_SERVICE_CONFIG_OK;
 }
 
 void can_service_tick_1ms(void)

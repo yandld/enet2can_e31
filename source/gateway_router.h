@@ -38,6 +38,7 @@ uint32_t gateway_router_from_udp(const can_gateway_frame_t *frame);
 bool gateway_router_next_udp_frame(can_gateway_frame_t *frame);
 gateway_router_snapshot_t gateway_router_get_snapshot(void);
 can_service_config_t gateway_router_get_config(uint8_t channel);
-uint32_t gateway_router_set_can0_config(const can_service_config_t *config);
+uint32_t gateway_router_set_config(uint8_t channel, const can_service_config_t *config);
+void gateway_router_reset_stats(void);
 
 #endif /* GATEWAY_ROUTER_H_ */
