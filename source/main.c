@@ -14,6 +14,7 @@
 #include "ethernet_lwip.h"
 #include "fsl_debug_console.h"
 #include "gateway_router.h"
+#include "latency_timer.h"
 
 void SysTick_Handler(void)
 {
@@ -109,6 +110,7 @@ int main(void)
 {
     BOARD_InitHardware();
     SysTick_Config(SystemCoreClock / 1000U);
+    latency_timer_init();
 
     PRINTF("\r\n========================================\r\n");
     PRINTF("  CAN0-first CAN FD gateway  -  MCXE31B\r\n");
@@ -127,6 +129,7 @@ int main(void)
 
     while (1)
     {
+        can_udp_gateway_mark_loop();
         ethernet_lwip_poll();
         can_service_poll();
         can_udp_gateway_poll();

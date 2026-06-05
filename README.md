@@ -22,6 +22,7 @@ main.c                  超级循环: ethernet_lwip_poll / can_service_poll / ca
   gateway_router.c      通道校验、UDP↔CAN 路由、peek/commit 背压、状态快照
   can_udp_gateway.c     UDP data tunnel(50000) + JSON 控制面(50001)
   can_gateway_protocol.h  SCGW v3 线格式(MCU 与上位机共享定义)
+  latency_timer.h         DWT 周期计数器 + 延迟统计(板内转发延迟测量)
 
 tools/can_gateway_protocol.py   上位机共享协议 codec
 tools/win_can_udp_test.py       Windows 配置 / 冒烟 / 多路压测 CLI
@@ -101,23 +102,31 @@ ch.tx_start/tx_done 增加            CAN 总线、对端配置或物理层问�
 
 ## Windows 压测
 
-压测会自动取压测前后状态,结束打印一行汇总 + `PASS`/`FAIL`。同总线时建议**单路**压测(多路同总线 = 总线争用,不是带宽叠加):
+压测**开跑前自动 reset 计数**,所以汇总、各路增量、以及板内 `board DWT` 延迟(含只增不减的 max 高水位)都只反映**本次运行**——无需手动先 `--reset-stats`。结束打印一行汇总 + `PASS`/`FAIL`。同总线时建议**单路**压测(多路同总线 = 总线争用,不是带宽叠加):
 
 ```powershell
-python .\tools\win_can_udp_test.py --board 192.168.8.107 --reset-stats
 python .\tools\win_can_udp_test.py --board 192.168.8.107 --pressure --channel 0 `
   --fd --brs --dlc 64 --duration 600 --rate 1000
 ```
 
-各路独立总线时,可 round-robin 同时压 6 路:
+各路独立总线时,可 round-robin 同时压 6 路。注意 `--rate` 是**所有通道合计**帧率(round-robin 平摊),所以 6 路各跑 1000 fps 需 `--rate 6000`:
 
 ```powershell
 python .\tools\win_can_udp_test.py --board 192.168.8.107 --pressure --channels 0 1 2 3 4 5 `
-  --fd --brs --dlc 64 --duration 600 --rate 1000
+  --fd --brs --dlc 64 --duration 600 --rate 6000
 ```
 
-- `--channel N` / `--channels ...`:单路 / 多路 round-robin。
-- 汇总比对压测前后:发送数 vs 板子 `rx_frames`、`tunnel.drop`/`loss`、`router.drop`、各路 `rx_drop`/`tx_drop`/`rx_fifo_overflow`/`error`/`bus-off`。
+6 路接**同一条总线**(如都接 PCAN):一路发,用 `--rx-watch` 校验其余各路是否每帧都收到:
+
+```powershell
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --pressure --channel 0 --rx-watch 1 2 3 4 5 `
+  --fd --brs --dlc 64 --duration 30 --rate 1000
+```
+
+- `--channel N` / `--channels ...`:单路 / 多路 round-robin 发送。`--rate` 为**合计**帧率,N 路平摊(每路 ≈ rate/N);想每路 R fps 用 `--rate N×R`。
+- 压测出现 `SATURATED`(`queue_full>0` 或有帧未上总线)即判 **FAIL**——表示该速率板子无法无损承受,应降低 `--rate` 找到可持续上限。
+- `--rx-watch N ...`:同总线上**应当收到**这些帧的通道;`rx < 上总线数` 即判 **FAIL**(抓拔线/丢帧)。即使不加,任何**非发送通道收到一部分**(<上总线数)也会自动 FAIL。
+- 汇总比对压测前后:发送数 vs 板子 `rx_frames`、`tunnel.drop`/`loss`、`router.drop`、各路 `rx_drop`/`tx_drop`/`rx_fifo_overflow`/`error`/`bus-off`,并打印 `board DWT us`(板内延迟,见下节)。
 - 加 `--json` 打印压测后完整状态。
 
 **验收判据(任一不满足即不达标):**
@@ -135,6 +144,35 @@ watermark 不长期顶满
 ```
 
 > 注:`rx_fifo_overflow` 现统计**硬件邮箱 overrun**(一帧在被读走前被覆盖=丢帧);`error` 聚合里也含它。两者都为 0 才算 RX 无损。
+
+## 延迟测量(板内,DWT 真值)
+
+固件用 Cortex-M7 的 **DWT 周期计数器**(160MHz,6.25ns 分辨率)给每帧打戳,得到**不依赖任何上位机时钟**的板内转发延迟。状态里多了 `latency_us` 字段,`--status` 与 `--pressure` 都会显示:
+
+```text
+latency_us (board, DWT): udp->can avg=.. /max=.. can->udp avg=.. /max=.. loop avg=.. /max=..
+```
+
+| 字段 | 含义(打戳点) | 与 CAN 负载 |
+|---|---|---|
+| `udp_to_can` | UDP 包到达 → 帧写入 CAN 发送邮箱(以太网→CAN) | **有关**:总线忙时含等空闲邮箱的排队(每帧上线约 140us) |
+| `can_to_udp` | 从 CAN 收邮箱读出 → 交给以太网发(CAN→以太网) | **基本无关**,约几十 us |
+| `loop` | 一圈超级循环耗时(轮询粒度) | 有关但有界;查 status 时因拼 JSON 会短时变大,与数据转发无关 |
+
+**注意累计语义**:`--status` 看到的 `latency_us` 是**自上次 `--reset-stats` 起累计**,其中 `max` 是**只增不减的高水位线**——不 reset 的话它会一直保留历史最坏值(容易误以为当前还很差)。`--pressure` **开跑前已自动 reset**,所以它输出的 `board DWT` 就是**本次运行**的值(含干净的 max);独立用 `--status` 看某段窗口时,先 `--reset-stats`。
+
+**用户级"以太网→CAN"完整延迟 ≈ `loop`(几十 us) + `udp_to_can` + ~140us 上线物理**;轻载下约 200–300us,远 < 1ms。
+
+量**与负载无关的纯处理开销**:看 `can_to_udp`,或用**逐帧发**(一帧一个 UDP 包,邮箱总空闲)测 `udp_to_can`:
+
+```powershell
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --reset-stats
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --send --channel 0 --id 0x100 `
+  --fd --brs --data "11 22 33 44 55 66 77 88" --count 5000 --interval-ms 1
+python .\tools\win_can_udp_test.py --board 192.168.8.107 --status
+```
+
+> `udp_to_can` 在"压测一次塞 16 帧"时会偏大——那是 16 帧共用一条总线的串行化(物理决定,非板子慢),不是网关处理慢。要"应用感知"的真实值,就让上位机一帧一个 UDP 包发(如上)。
 
 ## Linux SocketCAN
 
@@ -166,3 +204,5 @@ canplayer vcan0=can0 -I trace.log
 ```text
 "debug\enet2can_e31.out" - 0 Error(s), 0 Warning(s).
 ```
+
+> 改了**强制包含**的头(如 `source/mcux_config.h`,经 `-include` 注入、不被依赖跟踪)后,用 `-r`(全量重建)而非 `-b`,否则改动可能不生效。

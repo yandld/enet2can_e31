@@ -13,14 +13,15 @@
 #include "can_gateway_protocol.h"
 #include "fsl_debug_console.h"
 #include "gateway_router.h"
+#include "latency_timer.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
 #include "lwip/udp.h"
 
+/* Status is the largest control reply; config/caps/ack are smaller and are never
+ * built concurrently, so one shared scratch buffer (s_ctrlJson) of this size serves
+ * them all. Sizing the scratch at STATUS_JSON_SIZE never truncates the others. */
 #define STATUS_JSON_SIZE 4400U
-#define CONFIG_JSON_SIZE 1800U
-#define CAPABILITIES_JSON_SIZE 900U
-#define ACK_JSON_SIZE 160U
 #define CONTROL_REQUEST_SIZE 512U
 
 typedef struct
@@ -48,6 +49,26 @@ static uint32_t s_expectedRxSequence;
 static uint32_t s_controlRxCount;
 static uint32_t s_controlTxCount;
 static tunnel_counter_t s_tunnel;
+/* CAN-in -> UDP-out latency: stamped at MB read in can_service, measured here at
+ * the udp_sendto handoff. s_loopLatency tracks the super-loop period, which bounds
+ * the un-instrumented "frame waits in MB/DMA for the next poll" component. */
+static latency_stat_t s_canToUdpLatency;
+static latency_stat_t s_loopLatency;
+static uint32_t s_loopLastCycles;
+static bool s_loopValid;
+
+/*
+ * Off-stack scratch buffers. lwIP runs NO_SYS in the single super-loop context, so
+ * the data and control UDP callbacks are dispatched one datagram at a time and never
+ * nest or preempt each other. These module-scope buffers are therefore reused safely
+ * per call without any reentrancy risk. Keeping the big buffers off the stack caps the
+ * worst-case call depth (the deepest chain control_recv -> JSON -> udp_sendto ->
+ * ip4_frag would otherwise need ~9 KB of stack -- see debug/enet2can_e31.htm).
+ */
+static char s_ctrlJson[STATUS_JSON_SIZE];                /* control reply (status/config/caps/ack) */
+static char s_request[CONTROL_REQUEST_SIZE];             /* inbound control request copy */
+static uint8_t s_parseBuf[CAN_GATEWAY_MAX_PACKET_BYTES]; /* inbound data datagram copy */
+static can_gateway_packet_t s_rxPacket;                  /* parsed inbound data packet */
 
 static const char *json_bool(bool value)
 {
@@ -281,15 +302,9 @@ static void format_session(char *buffer, size_t size)
 
 static void update_data_session(const ip_addr_t *addr, uint16_t port)
 {
-    bool changed = !s_sessionKnown || !ip_addr_cmp(&s_sessionAddr, addr) || (s_sessionPort != port);
-    char peerIp[48];
-
-    if (changed)
-    {
-        (void)ipaddr_ntoa_r(addr, peerIp, (int)sizeof(peerIp));
-        PRINTF("UDP data session peer=%s:%u\r\n", peerIp, (unsigned)port);
-    }
-
+    /* No PRINTF here: this runs in the data hot path (lwIP callback in the super-loop),
+     * so a blocking UART write (~ms at 115200) would stall forwarding. The active
+     * session peer is reported in the status JSON instead. */
     ip_addr_copy(s_sessionAddr, *addr);
     s_sessionPort = port;
     s_sessionKnown = true;
@@ -302,22 +317,21 @@ static void update_data_session(const ip_addr_t *addr, uint16_t port)
  */
 static bool parse_packet(const struct pbuf *p, can_gateway_packet_t *packet)
 {
-    uint8_t buf[CAN_GATEWAY_MAX_PACKET_BYTES];
     uint16_t total;
     uint16_t offset;
     uint16_t count;
 
     if ((p == NULL) || (packet == NULL) ||
-        (p->tot_len < CAN_GATEWAY_PACKET_HEADER_SIZE) || (p->tot_len > sizeof(buf)))
+        (p->tot_len < CAN_GATEWAY_PACKET_HEADER_SIZE) || (p->tot_len > sizeof(s_parseBuf)))
     {
         return false;
     }
 
     total = p->tot_len;
-    (void)pbuf_copy_partial((struct pbuf *)p, buf, total, 0);
+    (void)pbuf_copy_partial((struct pbuf *)p, s_parseBuf, total, 0);
 
     memset(packet, 0, sizeof(*packet));
-    memcpy(&packet->header, buf, CAN_GATEWAY_PACKET_HEADER_SIZE);
+    memcpy(&packet->header, s_parseBuf, CAN_GATEWAY_PACKET_HEADER_SIZE);
 
     if ((packet->header.magic != CAN_GATEWAY_MAGIC) || (packet->header.version != CAN_GATEWAY_VERSION) ||
         (packet->header.packet_type != CAN_GATEWAY_PACKET_TYPE_FRAMES) ||
@@ -339,7 +353,7 @@ static bool parse_packet(const struct pbuf *p, can_gateway_packet_t *packet)
             return false;
         }
 
-        memcpy(frame, &buf[offset], CAN_GATEWAY_FRAME_HEAD_SIZE);
+        memcpy(frame, &s_parseBuf[offset], CAN_GATEWAY_FRAME_HEAD_SIZE);
         len = wire_data_len(frame->flags, frame->dlc);
 
         if ((uint32_t)offset + CAN_GATEWAY_FRAME_HEAD_SIZE + len > total)
@@ -349,17 +363,12 @@ static bool parse_packet(const struct pbuf *p, can_gateway_packet_t *packet)
 
         if (len != 0U)
         {
-            memcpy(frame->data, &buf[offset + CAN_GATEWAY_FRAME_HEAD_SIZE], len);
+            memcpy(frame->data, &s_parseBuf[offset + CAN_GATEWAY_FRAME_HEAD_SIZE], len);
         }
         offset += (uint16_t)(CAN_GATEWAY_FRAME_HEAD_SIZE + len);
     }
 
     return (offset == total);
-}
-
-static void log_control_result(const char *command, uint32_t status)
-{
-    PRINTF("UDP control cmd=%s status=%u\r\n", command, (unsigned)status);
 }
 
 static void track_rx_sequence(uint32_t sequence)
@@ -473,13 +482,37 @@ static void build_status_json(char *buffer, size_t size)
                 size,
                 &used,
                 "\"router\":{\"rx\":%u,\"tx\":%u,\"drop\":%u,\"parse_error\":%u,"
-                "\"disabled\":%u,\"queue_full\":%u},\"can\":[",
+                "\"disabled\":%u,\"queue_full\":%u},",
                 (unsigned)snapshot.data.rx,
                 (unsigned)snapshot.data.tx,
                 (unsigned)snapshot.data.drop,
                 (unsigned)snapshot.data.parseError,
                 (unsigned)snapshot.data.disabledChannel,
                 (unsigned)snapshot.data.queueFull);
+
+    {
+        /* Board-internal latency in microseconds (DWT ground truth, host-clock free).
+         * udp_to_can/can_to_udp are the instrumented forwarding legs; loop is the
+         * super-loop period that bounds the wait between a frame arriving and the
+         * next poll servicing it. */
+        latency_stat_t u2c = can_service_get_udp_to_can_latency();
+
+        append_json(buffer,
+                    size,
+                    &used,
+                    "\"latency_us\":{\"udp_to_can\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
+                    "\"can_to_udp\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
+                    "\"loop\":{\"count\":%u,\"avg\":%u,\"max\":%u}},\"can\":[",
+                    (unsigned)u2c.count,
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&u2c)),
+                    (unsigned)latency_cycles_to_us(u2c.maxCycles),
+                    (unsigned)s_canToUdpLatency.count,
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_canToUdpLatency)),
+                    (unsigned)latency_cycles_to_us(s_canToUdpLatency.maxCycles),
+                    (unsigned)s_loopLatency.count,
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_loopLatency)),
+                    (unsigned)latency_cycles_to_us(s_loopLatency.maxCycles));
+    }
 
     for (uint8_t channel = 0U; channel < CAN_GATEWAY_MAX_CHANNELS; channel++)
     {
@@ -587,6 +620,8 @@ static uint16_t flush_rx_to_session(void)
     uint16_t n = 0U;
     can_gateway_frame_t frame;
     can_gateway_packet_header_t header;
+    uint32_t ingress[CAN_GATEWAY_MAX_FRAMES_PER_PACKET];
+    uint32_t egressCycles;
     err_t err;
 
     if (pending == 0U)
@@ -615,6 +650,7 @@ static uint16_t flush_rx_to_session(void)
         {
             memcpy(&buf[off + CAN_GATEWAY_FRAME_HEAD_SIZE], frame.data, len);
         }
+        ingress[n] = frame.ingress_cycles;
         off += (uint16_t)(CAN_GATEWAY_FRAME_HEAD_SIZE + len);
         n++;
     }
@@ -635,12 +671,20 @@ static uint16_t flush_rx_to_session(void)
     memcpy(buf, &header, CAN_GATEWAY_PACKET_HEADER_SIZE);
 
     (void)pbuf_realloc(p, off);
+    egressCycles = latency_cycle_now(); /* UDP-out instant (handoff to lwIP) */
     err = udp_sendto(s_dataPcb, p, &s_sessionAddr, s_sessionPort);
     pbuf_free(p);
 
     if (err == ERR_OK)
     {
         gateway_router_commit_peeked(); /* consume frames only now that the send succeeded */
+        for (uint16_t i = 0U; i < n; i++)
+        {
+            if (ingress[i] != 0U) /* error frames carry no stamp (0); skip them */
+            {
+                latency_stat_add(&s_canToUdpLatency, (uint32_t)(egressCycles - ingress[i]));
+            }
+        }
         s_tunnel.txPackets++;
         s_tunnel.txFrames += n;
         s_tunnel.txSequence++;
@@ -687,38 +731,30 @@ static void send_json_to_control_peer(const ip_addr_t *addr, uint16_t port, cons
 
 static void send_status_json_to_peer(const ip_addr_t *addr, uint16_t port)
 {
-    char json[STATUS_JSON_SIZE];
-
-    memset(json, 0, sizeof(json));
-    build_status_json(json, sizeof(json));
-    send_json_to_control_peer(addr, port, json);
+    memset(s_ctrlJson, 0, sizeof(s_ctrlJson));
+    build_status_json(s_ctrlJson, sizeof(s_ctrlJson));
+    send_json_to_control_peer(addr, port, s_ctrlJson);
 }
 
 static void send_config_json_to_peer(const ip_addr_t *addr, uint16_t port)
 {
-    char json[CONFIG_JSON_SIZE];
-
-    memset(json, 0, sizeof(json));
-    build_config_json(json, sizeof(json));
-    send_json_to_control_peer(addr, port, json);
+    memset(s_ctrlJson, 0, sizeof(s_ctrlJson));
+    build_config_json(s_ctrlJson, sizeof(s_ctrlJson));
+    send_json_to_control_peer(addr, port, s_ctrlJson);
 }
 
 static void send_capabilities_json_to_peer(const ip_addr_t *addr, uint16_t port)
 {
-    char json[CAPABILITIES_JSON_SIZE];
-
-    memset(json, 0, sizeof(json));
-    build_capabilities_json(json, sizeof(json));
-    send_json_to_control_peer(addr, port, json);
+    memset(s_ctrlJson, 0, sizeof(s_ctrlJson));
+    build_capabilities_json(s_ctrlJson, sizeof(s_ctrlJson));
+    send_json_to_control_peer(addr, port, s_ctrlJson);
 }
 
 static void send_ack_json_to_peer(const ip_addr_t *addr, uint16_t port, const char *command)
 {
-    char json[ACK_JSON_SIZE];
-
-    memset(json, 0, sizeof(json));
-    build_ack_json(json, sizeof(json), command);
-    send_json_to_control_peer(addr, port, json);
+    memset(s_ctrlJson, 0, sizeof(s_ctrlJson));
+    build_ack_json(s_ctrlJson, sizeof(s_ctrlJson), command);
+    send_json_to_control_peer(addr, port, s_ctrlJson);
 }
 
 static void can_udp_gateway_data_recv(void *arg,
@@ -727,7 +763,7 @@ static void can_udp_gateway_data_recv(void *arg,
                                       const ip_addr_t *addr,
                                       uint16_t port)
 {
-    can_gateway_packet_t packet;
+    uint32_t ingressCycles = latency_cycle_now(); /* UDP-in instant for latency */
 
     (void)arg;
     (void)pcb;
@@ -739,7 +775,7 @@ static void can_udp_gateway_data_recv(void *arg,
 
     /* Hot path: no blocking PRINTF here. Drops/parse-errors are counted and
      * surfaced via the JSON status endpoint instead. */
-    if (!parse_packet(p, &packet))
+    if (!parse_packet(p, &s_rxPacket))
     {
         s_tunnel.parseError++;
         s_tunnel.drop++;
@@ -749,13 +785,14 @@ static void can_udp_gateway_data_recv(void *arg,
 
     pbuf_free(p);
     update_data_session(addr, port);
-    track_rx_sequence(packet.header.sequence);
+    track_rx_sequence(s_rxPacket.header.sequence);
     s_tunnel.rxPackets++;
-    s_tunnel.rxFrames += packet.header.frame_count;
+    s_tunnel.rxFrames += s_rxPacket.header.frame_count;
 
-    for (uint16_t i = 0U; i < packet.header.frame_count; i++)
+    for (uint16_t i = 0U; i < s_rxPacket.header.frame_count; i++)
     {
-        if (gateway_router_from_udp(&packet.frames[i]) != CAN_GATEWAY_STATUS_OK)
+        s_rxPacket.frames[i].ingress_cycles = ingressCycles;
+        if (gateway_router_from_udp(&s_rxPacket.frames[i]) != CAN_GATEWAY_STATUS_OK)
         {
             s_tunnel.drop++;
         }
@@ -832,36 +869,37 @@ static void reset_all_stats(void)
     s_expectedRxSequence = 0U;
     s_controlRxCount = 0U;
     s_controlTxCount = 0U;
+    latency_stat_reset(&s_canToUdpLatency);
+    latency_stat_reset(&s_loopLatency);
+    s_loopValid = false;
     gateway_router_reset_stats();
 }
 
 static void handle_control_request(const char *request, const ip_addr_t *addr, uint16_t port)
 {
+    /* No PRINTF here: the control callback runs in the super-loop, and a blocking
+     * UART write (~ms at 115200) would stall data forwarding. Every command already
+     * replies over UDP, so the result is observable without a serial log. */
     if (json_string_equals(request, "cmd", "get_capabilities"))
     {
-        log_control_result("get_capabilities", CAN_SERVICE_CONFIG_OK);
         send_capabilities_json_to_peer(addr, port);
     }
     else if (json_string_equals(request, "cmd", "get_config"))
     {
-        log_control_result("get_config", CAN_SERVICE_CONFIG_OK);
         send_config_json_to_peer(addr, port);
     }
     else if (json_string_equals(request, "cmd", "set_can_config"))
     {
-        uint32_t status = apply_config_request(request);
-        log_control_result("set_can_config", status);
+        (void)apply_config_request(request);
         send_config_json_to_peer(addr, port);
     }
     else if (json_string_equals(request, "cmd", "reset_stats"))
     {
         reset_all_stats();
-        log_control_result("reset_stats", CAN_SERVICE_CONFIG_OK);
         send_ack_json_to_peer(addr, port, "reset_stats");
     }
     else
     {
-        log_control_result("get_status", CAN_SERVICE_CONFIG_OK);
         send_status_json_to_peer(addr, port);
     }
 }
@@ -872,9 +910,7 @@ static void can_udp_gateway_control_recv(void *arg,
                                          const ip_addr_t *addr,
                                          uint16_t port)
 {
-    char request[CONTROL_REQUEST_SIZE];
     ip_addr_t sourceAddr;
-    char sourceIp[48];
     uint16_t sourcePort;
     u16_t copyLen;
 
@@ -889,13 +925,11 @@ static void can_udp_gateway_control_recv(void *arg,
     s_controlRxCount++;
     ip_addr_copy(sourceAddr, *addr);
     sourcePort = port;
-    memset(request, 0, sizeof(request));
+    memset(s_request, 0, sizeof(s_request));
     copyLen = (p->tot_len < (CONTROL_REQUEST_SIZE - 1U)) ? p->tot_len : (CONTROL_REQUEST_SIZE - 1U);
-    (void)pbuf_copy_partial(p, request, copyLen, 0);
+    (void)pbuf_copy_partial(p, s_request, copyLen, 0);
     pbuf_free(p);
-    (void)ipaddr_ntoa_r(&sourceAddr, sourceIp, (int)sizeof(sourceIp));
-    PRINTF("UDP control rx from %s:%u len=%u\r\n", sourceIp, (unsigned)sourcePort, (unsigned)copyLen);
-    handle_control_request(request, &sourceAddr, sourcePort);
+    handle_control_request(s_request, &sourceAddr, sourcePort);
 }
 
 bool can_udp_gateway_init(void)
@@ -958,4 +992,17 @@ void can_udp_gateway_poll(void)
     while (flush_rx_to_session() == CAN_GATEWAY_MAX_FRAMES_PER_PACKET)
     {
     }
+}
+
+/* Record one super-loop period sample. Call once per main-loop iteration. */
+void can_udp_gateway_mark_loop(void)
+{
+    uint32_t now = latency_cycle_now();
+
+    if (s_loopValid)
+    {
+        latency_stat_add(&s_loopLatency, (uint32_t)(now - s_loopLastCycles));
+    }
+    s_loopLastCycles = now;
+    s_loopValid = true;
 }

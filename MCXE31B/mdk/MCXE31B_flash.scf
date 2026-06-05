@@ -55,7 +55,10 @@
 #if (defined(__stack_size__))
   #define Stack_Size                   __stack_size__
 #else
-  #define Stack_Size                   0x0400
+  /* 8 KB: the worst-case call chain (lwIP udp_sendto -> ip4_frag -> pbuf, plus the
+   * ENET ISR on the same MSP) needs several KB; the SDK default 0x400 overflowed.
+   * Large transient buffers were also moved off the stack in can_udp_gateway.c. */
+  #define Stack_Size                   0x00002000
 #endif
 
 #if (defined(__heap_size__))

@@ -10,5 +10,7 @@
 
 bool can_udp_gateway_init(void);
 void can_udp_gateway_poll(void);
+/* Sample the super-loop period (DWT); call once per main-loop iteration. */
+void can_udp_gateway_mark_loop(void);
 
 #endif /* CAN_UDP_GATEWAY_H_ */

@@ -101,6 +101,9 @@ static bool s_initialized;
 static uint32_t s_activeMask;
 static uint32_t s_lastConfigStatus = CAN_SERVICE_CONFIG_OK;
 static can_channel_t s_can[CAN_SERVICE_CHANNEL_COUNT];
+/* UDP-in -> CAN-MB-write latency: stamped in the UDP callback, measured here when
+ * the frame is actually written to a TX mailbox (the board's "CAN-out" instant). */
+static latency_stat_t s_udpToCanLatency;
 
 /*
  * Identical message-buffer plan on all six instances so every channel is configured
@@ -417,6 +420,31 @@ static void can_flush_pending_error_frame(can_channel_t *ch)
     }
 }
 
+/*
+ * Log the bit rates ACTUALLY programmed into the timing registers. The PE clock
+ * may not divide the requested rate cleanly (e.g. 48 MHz cannot make exactly
+ * 5 Mbit/s), and FLEXCAN_FDCalculateImprovedTimingValues only accepts exact
+ * divisors -- on failure the SDK keeps the default timing, so the real data
+ * phase can differ from the request. Init-only (not a hot path). Bit time in TQ
+ * = 1 (sync) + propSeg + (phaseSeg1+1) + (phaseSeg2+1); rate = clk / (preDiv * tq).
+ */
+static void can_log_achieved_bitrate(const can_channel_t *ch, const flexcan_timing_config_t *t, bool exact)
+{
+    uint32_t nTq = (t->preDivider + 1U) * (t->propSeg + t->phaseSeg1 + t->phaseSeg2 + 3U);
+    uint32_t dTq = (t->fpreDivider + 1U) * (t->fpropSeg + t->fphaseSeg1 + t->fphaseSeg2 + 3U);
+    uint32_t nominal = (nTq != 0U) ? (ch->clkFreq / nTq) : 0U;
+    uint32_t data = (dTq != 0U) ? (ch->clkFreq / dTq) : 0U;
+
+    PRINTF("CAN%u: PE clk=%ukHz achieved nominal=%ukbps data=%ukbps (requested %u/%ukbps)%s\r\n",
+           (unsigned)ch->index,
+           (unsigned)(ch->clkFreq / 1000U),
+           (unsigned)(nominal / 1000U),
+           (unsigned)(data / 1000U),
+           (unsigned)(ch->bitRate / 1000U),
+           (unsigned)(ch->bitRateFD / 1000U),
+           exact ? "" : " [WARN: clock does not divide rate exactly -- using default timing]");
+}
+
 static void can_init_channel(can_channel_t *ch)
 {
     flexcan_config_t cfg;
@@ -434,12 +462,16 @@ static void can_init_channel(can_channel_t *ch)
 
     if (ch->useFD)
     {
+        bool exact;
+
         cfg.bitRateFD = ch->bitRateFD;
-        if (FLEXCAN_FDCalculateImprovedTimingValues(ch->base, cfg.bitRate, cfg.bitRateFD, ch->clkFreq, &timing))
+        exact = FLEXCAN_FDCalculateImprovedTimingValues(ch->base, cfg.bitRate, cfg.bitRateFD, ch->clkFreq, &timing);
+        if (exact)
         {
             memcpy(&cfg.timingConfig, &timing, sizeof(timing));
         }
         FLEXCAN_FDInit(ch->base, &cfg, ch->clkFreq, FD_PAYLOAD_SIZE, true);
+        can_log_achieved_bitrate(ch, &cfg.timingConfig, exact);
     }
     else
     {
@@ -619,6 +651,10 @@ static uint32_t can_start_tx(can_channel_t *ch, uint8_t localMb, const can_gatew
     ch->txMbBusy[localMb] = 1U;
     ch->txStartMs[localMb] = s_ms;
     ch->status.txStartCount++;
+    if (frame->ingress_cycles != 0U)
+    {
+        latency_stat_add(&s_udpToCanLatency, (uint32_t)(latency_cycle_now() - frame->ingress_cycles));
+    }
     return CAN_GATEWAY_STATUS_OK;
 }
 
@@ -856,6 +892,7 @@ static void can_drain_mb_bank(can_channel_t *ch)
         {
             can_fill_rx_from_classic(ch, &ch->rxFrame.classic, &frame);
         }
+        frame.ingress_cycles = latency_cycle_now(); /* CAN-in instant (MB read) for latency */
         can_store_rx_frame(ch, &frame);
         budget--;
     }
@@ -1156,6 +1193,11 @@ can_service_config_t can_service_get_config(uint8_t channel)
     return s_can[channel].config;
 }
 
+latency_stat_t can_service_get_udp_to_can_latency(void)
+{
+    return s_udpToCanLatency;
+}
+
 uint32_t can_service_set_config(uint8_t channel, const can_service_config_t *config)
 {
     uint32_t status = can_validate_config(channel, config);
@@ -1187,6 +1229,7 @@ void can_service_reset_stats(void)
         ch->status.rxQueued = ch->rxQueued;
         ch->status.txQueued = ch->txQueued;
     }
+    latency_stat_reset(&s_udpToCanLatency);
     s_lastConfigStatus = CAN_SERVICE_CONFIG_OK;
 }
 

@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "can_gateway_protocol.h"
+#include "latency_timer.h"
 
 #define CAN_SERVICE_CHANNEL_COUNT 6U
 #define CAN_ACTIVE_MASK 0x3FU
@@ -117,6 +118,8 @@ bool can_service_peek(uint8_t channel, uint16_t offset, can_gateway_frame_t *fra
 void can_service_consume(uint8_t channel, uint16_t count);
 can_service_status_t can_service_get_status(uint8_t channel);
 can_service_config_t can_service_get_config(uint8_t channel);
+/* Board-internal UDP-in -> CAN-MB-write latency (cycles), for the status report. */
+latency_stat_t can_service_get_udp_to_can_latency(void);
 uint32_t can_service_set_config(uint8_t channel, const can_service_config_t *config);
 uint32_t can_service_get_last_config_status(void);
 void can_service_reset_stats(void);

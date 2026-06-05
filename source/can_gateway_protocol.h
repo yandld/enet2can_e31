@@ -74,6 +74,10 @@ typedef struct
     uint32_t timestamp;
     uint32_t status;
     uint8_t data[64];
+    /* Board-internal DWT ingress timestamp (cycles). Carried with the frame
+     * through the service queues for latency measurement only; NOT serialized
+     * (the wire copies just the 16-byte head + payload, never the whole struct). */
+    uint32_t ingress_cycles;
 } can_gateway_frame_t;
 
 typedef struct

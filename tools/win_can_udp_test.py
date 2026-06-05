@@ -115,6 +115,17 @@ def print_status(status: dict) -> None:
         f"router: rx={router.get('rx', 0)} tx={router.get('tx', 0)} "
         f"drop={router.get('drop', 0)} queue_full={router.get('queue_full', 0)}"
     )
+    lat = status.get("latency_us")
+    if lat:
+        u2c = lat.get("udp_to_can", {})
+        c2u = lat.get("can_to_udp", {})
+        loop = lat.get("loop", {})
+        print(
+            f"latency_us (board, DWT): udp->can avg={u2c.get('avg', 0)}/max={u2c.get('max', 0)} "
+            f"can->udp avg={c2u.get('avg', 0)}/max={c2u.get('max', 0)} "
+            f"loop avg={loop.get('avg', 0)}/max={loop.get('max', 0)} "
+            f"(n={u2c.get('count', 0)}/{c2u.get('count', 0)})"
+        )
     for can in status.get("can", []):
         ch = can.get("ch")
         cfg = config.get(ch, {})
@@ -212,6 +223,15 @@ def do_pressure(args: argparse.Namespace) -> None:
     payload = bytes(index & 0xFF for index in range(args.dlc if args.fd else min(args.dlc, 8)))
     id_mask = 0x1FFFFFFF if args.extended else 0x7FF  # keep generated IDs in range; the board rejects out-of-range IDs
 
+    # Reset first so every counter -- including the board DWT latency high-water max
+    # (which only ever increases until a reset) -- reflects THIS run, not whatever
+    # accumulated since the last reset. Best-effort: a transient control loss still
+    # lets the run proceed (counts come from the before/after delta either way).
+    try:
+        control(args.board, args.control_port, {"cmd": "reset_stats"})
+    except SystemExit:
+        print("warn: reset_stats failed; latency max may be a stale high-water from earlier runs")
+
     before = get_status(args.board, args.control_port)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sent = 0
@@ -233,12 +253,11 @@ def do_pressure(args: argparse.Namespace) -> None:
                 slack = (start + index / args.rate) - time.monotonic()
                 if slack > 0:
                     time.sleep(slack)
+        elapsed = max(time.monotonic() - start, 1e-6)
+        time.sleep(0.5)  # let the board's CAN TX queues drain before reading counters
+        after = get_status(args.board, args.control_port)
     finally:
         sock.close()
-
-    elapsed = max(time.monotonic() - start, 1e-6)
-    time.sleep(0.5)  # let the board's CAN TX queues drain before reading counters
-    after = get_status(args.board, args.control_port)
 
     def delta(section: str, key: str) -> int:
         return int(after.get(section, {}).get(key, 0) or 0) - int(before.get(section, {}).get(key, 0) or 0)
@@ -271,17 +290,27 @@ def do_pressure(args: argparse.Namespace) -> None:
         print(f"  note: {over_rate} frames over bus capacity (source rate too high) -- not delivery loss")
 
     # Per-channel delta breakdown for every channel the board reports.
+    send_set = set(channels)
+    watch_set = set(args.rx_watch or [])
     issues = []
     for ch in sorted(after_can.keys()):
         state = after_can[ch].get("state", "?")
         d_err = cdelta(ch, "error")
+        d_rx = cdelta(ch, "rx")
+        # A non-sender channel that received SOME frames but fewer than reached the
+        # bus is a receiver that lost frames (e.g. its cable was pulled mid-test).
+        # rx==0 channels are senders / disabled / not on this bus, so are not flagged.
+        rx_short = (tx_on_bus - d_rx) if ((ch not in send_set) and (0 < d_rx < tx_on_bus)) else 0
+        note = f"  <- RX LOST {rx_short}/{tx_on_bus}" if rx_short else ""
         print(
-            f"  CAN{ch}: tx_done+={cdelta(ch, 'tx_done')} rx+={cdelta(ch, 'rx')} "
+            f"  CAN{ch}: tx_done+={cdelta(ch, 'tx_done')} rx+={d_rx} "
             f"rx_drop+={cdelta(ch, 'rx_drop')} tx_drop+={cdelta(ch, 'tx_drop')} "
-            f"ovf+={cdelta(ch, 'rx_fifo_overflow')} err+={d_err} state={state}"
+            f"ovf+={cdelta(ch, 'rx_fifo_overflow')} err+={d_err} state={state}{note}"
         )
         if d_err or state == "bus-off":
             issues.append(f"CAN{ch} fault(err+={d_err} state={state})")
+        if rx_short and (ch not in watch_set):  # watch channels are checked in the rx-watch loop
+            issues.append(f"CAN{ch} rx lost {rx_short}/{tx_on_bus}")
 
     # Real CAN delivery: each watched receiver must get every frame that actually
     # reached the wire (rx == on_bus). Compared to on_bus, NOT sent, so saturation
@@ -299,8 +328,25 @@ def do_pressure(args: argparse.Namespace) -> None:
         if (lost > 0) or d_ovf or d_rx_drop or info.get("state") == "bus-off":
             can_loss = True
 
+    # Board-internal latency (DWT ground truth, host-clock free) for THIS run, since
+    # the run reset stats at the start. udp->can and can->udp are the forwarding legs;
+    # loop is the super-loop period that bounds the wait before a frame is serviced.
+    board_lat = after.get("latency_us")
+    if board_lat:
+        u2c = board_lat.get("udp_to_can", {})
+        c2u = board_lat.get("can_to_udp", {})
+        loop = board_lat.get("loop", {})
+        print(
+            f"  board DWT us (this run): udp->can avg={u2c.get('avg', 0)}/max={u2c.get('max', 0)} "
+            f"can->udp avg={c2u.get('avg', 0)}/max={c2u.get('max', 0)} "
+            f"loop avg={loop.get('avg', 0)}/max={loop.get('max', 0)}"
+        )
+
+    # Saturation (TX queue_full, or frames that never reached the bus) means the board
+    # could not sustain this rate losslessly -- the acceptance criteria require
+    # queue_full == 0, so a SATURATED run FAILS (lower --rate to find the limit).
     passed = ((rx_frames >= total) and (loss == 0) and (parse_error == 0)
-              and (router_reject == 0) and not issues and not can_loss)
+              and (router_reject == 0) and not saturated and not issues and not can_loss)
     if issues:
         print("channel issues: " + "; ".join(issues))
     print("PASS" if passed else "FAIL")
@@ -359,7 +405,9 @@ def build_parser() -> argparse.ArgumentParser:
     # pressure
     parser.add_argument("--channels", nargs="+", type=int, help="--pressure channels, round-robin, e.g. 0 1 2")
     parser.add_argument("--duration", type=float, default=10.0, help="--pressure seconds")
-    parser.add_argument("--rate", type=float, default=1000.0, help="--pressure target frames/second")
+    parser.add_argument("--rate", type=float, default=1000.0,
+                        help="--pressure AGGREGATE frames/second across all --channels (round-robin); "
+                             "per-channel rate = rate / channel-count, so N channels at R fps each need --rate N*R")
     parser.add_argument("--dlc", type=int, default=64, help="--pressure payload length")
     parser.add_argument("--base-id", type=lambda value: int(value, 0), default=0x100, help="--pressure base CAN ID")
     parser.add_argument("--rx-watch", nargs="+", type=int, default=None,
