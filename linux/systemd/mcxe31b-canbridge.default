@@ -1,0 +1,13 @@
+# /etc/default/mcxe31b-canbridge - configuration for the mcxe31b-canbridge service.
+
+# Board (MCXE31B gateway) IPv4 address. REQUIRED - edit this.
+BOARD_IP=192.168.1.50
+
+# SocketCAN interfaces to create/bridge, in channel order 0..5.
+IFACES="can0 can1 can2 can3 can4 can5"
+
+# Idle session keepalive in milliseconds (board unicasts RX to the last peer).
+KEEPALIVE_MS=200
+
+# journald throughput/error stats interval in milliseconds (0 = off).
+STATS_MS=1000

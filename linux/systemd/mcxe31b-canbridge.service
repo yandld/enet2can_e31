@@ -1,0 +1,18 @@
+[Unit]
+Description=MCXE31B UDP<->SocketCAN bridge (can0..can5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/mcxe31b-canbridge
+# Create + bring up the vcan interfaces at CAN-FD MTU before binding.
+ExecStartPre=/usr/libexec/mcxe31b-canbridge/setup-vcan.sh $IFACES
+ExecStart=/usr/sbin/canbridge --board $BOARD_IP --keepalive-ms $KEEPALIVE_MS --stats-ms $STATS_MS $IFACES
+Restart=always
+RestartSec=2
+# A little scheduling priority smooths CAN bursts; harmless if the kernel denies it.
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
