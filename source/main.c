@@ -15,6 +15,7 @@
 #include "fsl_debug_console.h"
 #include "gateway_router.h"
 #include "latency_timer.h"
+#include "status_led.h"
 
 void SysTick_Handler(void)
 {
@@ -54,6 +55,8 @@ static void fault_log_and_halt(const char *name, const uint32_t *stacked, uint32
            (unsigned)SCB->MMFAR,
            (unsigned)SCB->BFAR,
            (unsigned)SCB->SHCSR);
+
+    status_led_fault();
 
     while (1)
     {
@@ -126,6 +129,7 @@ int main(void)
     (void)can_service_init(CAN_ACTIVE_MASK);
     (void)gateway_router_init(CAN_ACTIVE_MASK);
     (void)can_udp_gateway_init();
+    status_led_init();
 
     while (1)
     {
@@ -140,5 +144,7 @@ int main(void)
         can_udp_gateway_poll();
         t3 = latency_cycle_now();
         can_udp_gateway_mark_legs(t1 - t0, t2 - t1, t3 - t2);
+
+        status_led_poll();
     }
 }

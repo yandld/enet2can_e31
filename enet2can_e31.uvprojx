@@ -976,6 +976,16 @@
               <FilePath>source/ethernet_lwip.h</FilePath>
             </File>
             <File>
+              <FileName>status_led.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>source/status_led.c</FilePath>
+            </File>
+            <File>
+              <FileName>status_led.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>source/status_led.h</FilePath>
+            </File>
+            <File>
               <FileName>lwipopts.h</FileName>
               <FileType>5</FileType>
               <FilePath>source/lwipopts.h</FilePath>
