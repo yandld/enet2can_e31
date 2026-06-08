@@ -9,11 +9,18 @@
 
 // #define ETH_DISABLE_RX_INT_WHEN_OUT_OF_BUFFERS 0
 #define ETH_LINK_POLLING_INTERVAL_MS 1500U
-#define ETH_MAX_RX_PKTS_AT_ONCE 0U
+/* Bounded RX drain per super-loop pass (was 0 = unbounded while(1) in
+ * ethernetif.c). 0 let one ethernet_lwip_poll() monopolise an iteration under a
+ * UDP flood and starve the CAN TX servicing; a finite cap interleaves RX with
+ * can_service_poll()/can_udp_gateway_poll() every loop. Manual tuning. */
+#define ETH_MAX_RX_PKTS_AT_ONCE 8U
 // #define ETH_USE_GPIO_ADAPTER 0
 #define ENET_RXBUFF_SIZE 1518U
 #define ENET_TXBUFF_SIZE 1514U
-#define ENET_RXBD_NUM 8U
+/* Deeper RX ring (was 8) so a transient super-loop spike does not overflow the
+ * MAC RX ring and silently drop whole UDP datagrams (seen as tunnel.loss). 16 BDs
+ * -> 32 buffers (~0.67 ms slack at 24000 fps). Cost ~24 KB .bss. Manual tuning. */
+#define ENET_RXBD_NUM 16U
 #define ENET_RXBUFF_NUM (ENET_RXBD_NUM * 2)
 #define ENET_TXBD_NUM 8U
 #define ETH_ENET_QOS_MII_MODE kENET_QOS_RmiiMode

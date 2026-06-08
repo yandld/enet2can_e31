@@ -33,7 +33,7 @@ check-proto:
 install: all
 	install -d $(DESTDIR)$(SBINDIR) $(DESTDIR)$(LIBEXECDIR) $(DESTDIR)$(UNITDIR) $(DESTDIR)$(DEFAULTDIR)
 	install -m 0755 canbridge canbridge_ctl $(DESTDIR)$(SBINDIR)/
-	install -m 0755 canmesh scripts/setup-vcan.sh scripts/stress.sh scripts/selftest.sh $(DESTDIR)$(LIBEXECDIR)/
+	install -m 0755 canmesh scripts/setup-vcan.sh scripts/stress.sh scripts/latency.sh scripts/selftest.sh $(DESTDIR)$(LIBEXECDIR)/
 	install -m 0644 systemd/mcxe31b-canbridge.service $(DESTDIR)$(UNITDIR)/
 	[ -f $(DESTDIR)$(DEFAULTDIR)/mcxe31b-canbridge ] || \
 		install -m 0644 systemd/mcxe31b-canbridge.default $(DESTDIR)$(DEFAULTDIR)/mcxe31b-canbridge

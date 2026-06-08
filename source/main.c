@@ -129,9 +129,16 @@ int main(void)
 
     while (1)
     {
+        uint32_t t0, t1, t2, t3;
+
         can_udp_gateway_mark_loop();
+        t0 = latency_cycle_now();
         ethernet_lwip_poll();
+        t1 = latency_cycle_now();
         can_service_poll();
+        t2 = latency_cycle_now();
         can_udp_gateway_poll();
+        t3 = latency_cycle_now();
+        can_udp_gateway_mark_legs(t1 - t0, t2 - t1, t3 - t2);
     }
 }

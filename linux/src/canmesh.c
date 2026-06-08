@@ -33,9 +33,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <sched.h>
+
 #include <net/if.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 
 #include <linux/can.h>
@@ -80,6 +83,22 @@ static void die(const char *m)
 {
     perror(m);
     exit(1);
+}
+
+/* Best-effort realtime so the TEST TOOL's own scheduling jitter does not inflate the
+ * measured roundtrip: the RX thread stamps arrival time, so a late wakeup would be
+ * misread as product latency. Non-fatal if the kernel denies it. Threads created after
+ * this inherit the policy (PTHREAD_INHERIT_SCHED), so the RX thread is realtime too. */
+static void try_realtime(int prio)
+{
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = prio;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) < 0)
+        fprintf(stderr, "note: SCHED_FIFO prio %d denied (%s); normal scheduling\n",
+                prio, strerror(errno));
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0)
+        fprintf(stderr, "note: mlockall denied (%s); pages not locked\n", strerror(errno));
 }
 
 static int open_can(const char *iface)
@@ -219,6 +238,9 @@ int main(int argc, char **argv)
     if (length > 64) length = 64;
     g_n = n;
     for (int i = 0; i < n; i++) g_sock[i] = open_can(ifaces[i]);
+
+    /* Realtime BEFORE creating the RX thread so it inherits the policy. */
+    try_realtime(50);
 
     pthread_t rxt;
     if (pthread_create(&rxt, NULL, rx_thread, NULL) != 0) die("pthread_create");

@@ -50,8 +50,12 @@ if command -v systemctl >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     /usr/libexec/mcxe31b-canbridge/setup-vcan.sh $IFACES
     systemctl daemon-reload
-    systemctl enable --now mcxe31b-canbridge.service
-    echo "service started. Check:  systemctl status mcxe31b-canbridge ;  candump can0"
+    # enable + restart (not "enable --now"): on a re-install the service is already
+    # running, and "--now" would NOT pick up the rebuilt binary or the changed unit
+    # file (e.g. the realtime scheduling). restart always redeploys both.
+    systemctl enable mcxe31b-canbridge.service
+    systemctl restart mcxe31b-canbridge.service
+    echo "service (re)started. Check:  systemctl status mcxe31b-canbridge ;  candump can0"
 else
     echo "no systemd detected - start manually after editing /etc/default/mcxe31b-canbridge:"
     echo "  /usr/libexec/mcxe31b-canbridge/setup-vcan.sh"

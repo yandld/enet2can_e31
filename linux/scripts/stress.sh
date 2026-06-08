@@ -20,7 +20,11 @@
 # Rate is a positional arg on purpose: 'RATE=2000 sudo ...' does NOT work because
 # sudo drops the caller's env vars. To override other knobs, put them after sudo,
 # e.g. 'sudo IFACES="can0 can1" ./stress.sh <ip>'.
-#   env knobs: RATE LEN DURATION BITRATE DBITRATE IFACES
+# This is the LOSS/THROUGHPUT test. It does NOT report a latency max on purpose: under a
+# 6x1000fps flood that "max" is queueing, not forwarding latency. For the real latency,
+# run latency.sh (ping-style). DEBUG=1 re-enables the detailed board-internal latency
+# breakdown for tuning (hidden from customers).
+#   env knobs: RATE LEN DURATION BITRATE DBITRATE IFACES DEBUG
 set -u
 
 BOARD_IP="${1:-${BOARD_IP:-192.168.8.113}}"
@@ -30,6 +34,7 @@ LEN="${LEN:-64}"              # FD payload bytes
 DURATION="${DURATION:-10}"
 BITRATE="${BITRATE:-1000000}"
 DBITRATE="${DBITRATE:-5000000}"
+DEBUG="${DEBUG:-0}"          # 1 = show detailed board-internal latency debug (hidden from customers)
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CTL="${CTL:-$(command -v canbridge_ctl 2>/dev/null || echo "$HERE/../canbridge_ctl")}"
@@ -49,13 +54,19 @@ for f in $IFACES; do
 done
 "$CTL" --board "$BOARD_IP" reset_stats >/dev/null 2>&1
 
-# one canmesh per pair; --rate is aggregate over the 2 ifaces, so RATE*2 = RATE/ch each way
+# one canmesh per pair; --rate is aggregate over the 2 ifaces, so RATE*2 = RATE/ch each way.
+# Capture each pair's output to a tmp file so we can BOTH replay it and parse the roundtrip
+# latency for the board-vs-network breakdown printed after the run.
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
 set -- $IFACES
 pids=""
+p=0
 while [ $# -ge 2 ]; do
     a="$1"; b="$2"; shift 2
-    "$MESH" "$a" "$b" --rate "$((RATE*2))" --duration "$DURATION" --len "$LEN" &
+    "$MESH" "$a" "$b" --rate "$((RATE*2))" --duration "$DURATION" --len "$LEN" >"$TMPD/p$p.out" 2>&1 &
     pids="$pids $!"
+    p=$((p+1))
 done
 [ $# -eq 1 ] && echo "note: odd iface '$1' unpaired (needs a partner on its bus)"
 # each canmesh exits 0=PASS, 2=FAIL, 3=TOOL-LIMITED; aggregate the verdicts
@@ -63,35 +74,82 @@ fail=0
 for pid in $pids; do
     wait "$pid" || fail=1
 done
+# Per-bus lines: in a normal (customer) run, hide the latency figures -- under this flood
+# that "max" is queueing, not latency (use latency.sh for the real number). DEBUG=1 keeps
+# them plus the full board-internal breakdown below.
+if [ "$DEBUG" = 1 ]; then
+    cat "$TMPD"/p*.out 2>/dev/null
+else
+    sed 's/, latency avg=[^ ]* max=[^ ]*//' "$TMPD"/p*.out 2>/dev/null
+fi
 
-# The PRODUCT's real latency: the board's own DWT counters (microseconds), covering
-# ONLY the on-board UDP<->CAN forwarding. The per-bus 'latency' above is the full
-# Pi->board->Pi roundtrip and is dominated by the host's non-realtime scheduling, not
-# the product. Counters were zeroed before the run (reset_stats above), so this snapshot
-# is the latency over exactly this test window. Reused by the failure branch below.
+# Board counters snapshot (zeroed before the run). Reused by the failure branch below.
 status=$("$CTL" --board "$BOARD_IP" get_status 2>/dev/null)
-lat=$(printf '%s' "$status" | awk '
-function field(s, sect, key,   r) {
-    if (match(s, "\"" sect "\":[{][^}]*[}]")) {
-        r = substr(s, RSTART, RLENGTH)
-        if (match(r, "\"" key "\":[0-9]+")) {
-            r = substr(r, RSTART, RLENGTH); sub("\"" key "\":", "", r); return r
+
+if [ "$DEBUG" = 1 ]; then
+    # Detailed debug (hidden from customers): board DWT latency, the board-vs-network
+    # split, and per-leg poll timings that locate a board-internal loop spike. Under this
+    # flood the "latency" maxes are queueing, not forwarding latency -- which is exactly
+    # why they are gated behind DEBUG. For the real latency run latency.sh.
+    rt_max=$(grep -ho 'max=[0-9.]*ms' "$TMPD"/p*.out 2>/dev/null | sed 's/max=//;s/ms//' | sort -gr | head -1)
+    rt_avg=$(grep -ho 'avg=[0-9.]*ms' "$TMPD"/p*.out 2>/dev/null | sed 's/avg=//;s/ms//' | sort -gr | head -1)
+    printf '%s' "$status" | awk -v rtmax="${rt_max:-0}" -v rtavg="${rt_avg:-0}" '
+    function field(s, sect, key,   r) {
+        if (match(s, "\"" sect "\":[{][^}]*[}]")) {
+            r = substr(s, RSTART, RLENGTH)
+            if (match(r, "\"" key "\":[0-9]+")) {
+                r = substr(r, RSTART, RLENGTH); sub("\"" key "\":", "", r); return r + 0
+            }
         }
+        return -1
     }
-    return "?"
-}
-{
-    printf "udp->can avg=%s max=%s  can->udp avg=%s max=%s  loop max=%s",
-           field($0, "udp_to_can", "avg"), field($0, "udp_to_can", "max"),
-           field($0, "can_to_udp", "avg"), field($0, "can_to_udp", "max"),
-           field($0, "loop", "max")
-}')
-case "$lat" in
-*max=[0-9]*)
-    echo "product latency (board internal DWT, real microseconds): $lat"
-    echo "  ^ this is the product. per-bus 'latency' above = Pi->board->Pi roundtrip incl. host jitter."
-    ;;
-esac
+    {
+        u2ca = field($0, "udp_to_can", "avg"); u2cm = field($0, "udp_to_can", "max")
+        c2ua = field($0, "can_to_udp", "avg"); c2um = field($0, "can_to_udp", "max")
+        lpa  = field($0, "loop", "avg");       lpm  = field($0, "loop", "max")
+        ethm = field($0, "eth_poll", "max")
+        canm = field($0, "can_poll", "max")
+        gwm  = field($0, "gw_poll", "max")
+        if (u2cm < 0) exit
+
+        printf "product latency (board internal DWT, real microseconds): udp->can avg=%d max=%d  can->udp avg=%d max=%d  loop max=%d\n",
+               u2ca, u2cm, c2ua, c2um, lpm
+        bmax = u2cm + c2um; bavg = u2ca + c2ua
+        print "=== latency breakdown: board vs network+host (DEBUG; under load this is QUEUEING, not latency) ==="
+        if (rtmax + 0 > 0) {
+            tmax = rtmax * 1000.0; omax = tmax - bmax; if (omax < 0) omax = 0
+            printf "  MAX   board %.2f ms  |  total %.2f ms  |  network+host %.2f ms  (%.0f%% of total)\n",
+                   bmax / 1000.0, tmax / 1000.0, omax / 1000.0, 100.0 * omax / tmax
+        }
+        if (rtavg + 0 > 0) {
+            tavg = rtavg * 1000.0; oavg = tavg - bavg; if (oavg < 0) oavg = 0
+            printf "  AVG   board %.2f ms  |  total %.2f ms  |  network+host %.2f ms  (%.0f%% of total)\n",
+                   bavg / 1000.0, tavg / 1000.0, oavg / 1000.0, 100.0 * oavg / tavg
+        }
+        printf "  [board internals] loop avg=%d max=%d us  |  poll-leg max: eth=%d can=%d gw=%d us\n",
+               lpa, lpm, ethm, canm, gwm
+    }'
+else
+    # Customer view: throughput + board queue health, NO latency (latency belongs in
+    # latency.sh, measured unloaded). 0 drops + queue headroom = lossless at this rate.
+    printf '%s' "$status" | awk '
+    function num(s, k,   r) { if (match(s, "\"" k "\":[0-9]+")) { r = substr(s, RSTART, RLENGTH); sub("\"" k "\":", "", r); return r + 0 } return 0 }
+    function wm(s, k,   w)  { if (match(s, "\"watermark\":[{][^}]*[}]")) { w = substr(s, RSTART, RLENGTH); return num(w, k) } return 0 }
+    {
+        qfull = 0
+        if (match($0, "\"router\":[{][^}]*[}]")) { rr = substr($0, RSTART, RLENGTH); qfull = num(rr, "queue_full") }
+        cans = $0; sub(/.*"can":\[/, "", cans); sub(/\],"config".*/, "", cans)
+        ns = split(cans, c, /\{"ch":/)
+        wtx = 0; wrx = 0; dtx = 0; drx = 0; ovf = 0
+        for (i = 2; i <= ns; i++) {
+            dtx += num(c[i], "tx_drop"); drx += num(c[i], "rx_drop"); ovf += num(c[i], "rx_fifo_overflow")
+            a = wm(c[i], "tx"); if (a > wtx) wtx = a
+            b = wm(c[i], "rx"); if (b > wrx) wrx = b
+        }
+        printf "board: drops tx=%d rx=%d overflow=%d queue_full=%d  |  peak queue tx=%d/64 rx=%d/64\n",
+               dtx, drx, ovf, qfull, wtx, wrx
+    }'
+fi
 
 if [ "$fail" = 0 ]; then
     echo "ALL PASS - 6 channels lossless at ${RATE} fps/ch (raise rate via 2nd arg to find the ceiling)"

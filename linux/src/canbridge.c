@@ -37,10 +37,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sched.h>
+
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
@@ -135,6 +138,24 @@ static void set_nonblock(int fd)
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
         die("fcntl(O_NONBLOCK): %s", strerror(errno));
+}
+
+/* Best-effort realtime: pin the daemon at SCHED_FIFO and lock its pages so a delayed
+ * wakeup never lets the CAN->UDP backlog burst onto the board in one shot. That burst is
+ * the dominant cause of the board's udp->can tail latency -- the board must serialize it
+ * onto the 1M/5M CAN wire (~140 us/frame). Scheduled promptly, the bridge forwards
+ * frame-by-frame and the board stays near its ~90 us average. Non-fatal: without
+ * privilege the bridge still runs, just at normal scheduling. */
+static void try_realtime(int prio)
+{
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = prio;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) < 0)
+        fprintf(stderr, "note: SCHED_FIFO prio %d denied (%s); normal scheduling\n",
+                prio, strerror(errno));
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0)
+        fprintf(stderr, "note: mlockall denied (%s); pages not locked\n", strerror(errno));
 }
 
 /* ---- socket setup (with hard-fail self-checks) ---- */
@@ -576,6 +597,9 @@ int main(int argc, char **argv)
     g_udp = open_udp();
     for (int i = 0; i < g_cfg.n; i++)
         g_can[i] = open_can(g_cfg.ifaces[i], i);
+
+    /* Raise scheduling before the event loop so the very first burst is handled RT. */
+    try_realtime(50);
 
     /* signals via signalfd, folded into epoll */
     sigset_t mask;

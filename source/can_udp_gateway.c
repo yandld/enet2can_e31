@@ -21,8 +21,13 @@
 /* Status is the largest control reply; config/caps/ack are smaller and are never
  * built concurrently, so one shared scratch buffer (s_ctrlJson) of this size serves
  * them all. Sizing the scratch at STATUS_JSON_SIZE never truncates the others. */
-#define STATUS_JSON_SIZE 4400U
+#define STATUS_JSON_SIZE 4700U
 #define CONTROL_REQUEST_SIZE 512U
+
+/* Cap datagrams flushed to the host per can_udp_gateway_poll() so a large upstream
+ * backlog cannot monopolise one super-loop iteration and starve CAN TX servicing.
+ * Leftover frames flush on the next poll (bounded latency, not loss). */
+#define CAN_GATEWAY_MAX_FLUSH_PER_POLL 16U
 
 typedef struct
 {
@@ -56,6 +61,10 @@ static latency_stat_t s_canToUdpLatency;
 static latency_stat_t s_loopLatency;
 static uint32_t s_loopLastCycles;
 static bool s_loopValid;
+/* Per-leg super-loop timing, to attribute loop.max to a stage (DWT cycles). */
+static latency_stat_t s_ethPollLatency; /* ethernet_lwip_poll()   */
+static latency_stat_t s_canPollLatency; /* can_service_poll()     */
+static latency_stat_t s_gwPollLatency;  /* can_udp_gateway_poll() */
 
 /*
  * Off-stack scratch buffers. lwIP runs NO_SYS in the single super-loop context, so
@@ -502,7 +511,10 @@ static void build_status_json(char *buffer, size_t size)
                     &used,
                     "\"latency_us\":{\"udp_to_can\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
                     "\"can_to_udp\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
-                    "\"loop\":{\"count\":%u,\"avg\":%u,\"max\":%u}},\"can\":[",
+                    "\"loop\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
+                    "\"eth_poll\":{\"avg\":%u,\"max\":%u},"
+                    "\"can_poll\":{\"avg\":%u,\"max\":%u},"
+                    "\"gw_poll\":{\"avg\":%u,\"max\":%u}},\"can\":[",
                     (unsigned)u2c.count,
                     (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&u2c)),
                     (unsigned)latency_cycles_to_us(u2c.maxCycles),
@@ -511,7 +523,13 @@ static void build_status_json(char *buffer, size_t size)
                     (unsigned)latency_cycles_to_us(s_canToUdpLatency.maxCycles),
                     (unsigned)s_loopLatency.count,
                     (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_loopLatency)),
-                    (unsigned)latency_cycles_to_us(s_loopLatency.maxCycles));
+                    (unsigned)latency_cycles_to_us(s_loopLatency.maxCycles),
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_ethPollLatency)),
+                    (unsigned)latency_cycles_to_us(s_ethPollLatency.maxCycles),
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_canPollLatency)),
+                    (unsigned)latency_cycles_to_us(s_canPollLatency.maxCycles),
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_gwPollLatency)),
+                    (unsigned)latency_cycles_to_us(s_gwPollLatency.maxCycles));
     }
 
     for (uint8_t channel = 0U; channel < CAN_GATEWAY_MAX_CHANNELS; channel++)
@@ -871,6 +889,9 @@ static void reset_all_stats(void)
     s_controlTxCount = 0U;
     latency_stat_reset(&s_canToUdpLatency);
     latency_stat_reset(&s_loopLatency);
+    latency_stat_reset(&s_ethPollLatency);
+    latency_stat_reset(&s_canPollLatency);
+    latency_stat_reset(&s_gwPollLatency);
     s_loopValid = false;
     gateway_router_reset_stats();
 }
@@ -988,9 +1009,14 @@ void can_udp_gateway_poll(void)
         return;
     }
 
-    /* Flush queued CAN frames in MTU-sized batches until drained or backpressured. */
-    while (flush_rx_to_session() == CAN_GATEWAY_MAX_FRAMES_PER_PACKET)
+    /* Flush queued CAN frames in MTU-sized batches until drained, backpressured, or
+     * the per-poll datagram budget is reached (keeps one iteration bounded). */
+    for (uint8_t i = 0U; i < CAN_GATEWAY_MAX_FLUSH_PER_POLL; i++)
     {
+        if (flush_rx_to_session() != CAN_GATEWAY_MAX_FRAMES_PER_PACKET)
+        {
+            break;
+        }
     }
 }
 
@@ -1005,4 +1031,13 @@ void can_udp_gateway_mark_loop(void)
     }
     s_loopLastCycles = now;
     s_loopValid = true;
+}
+
+/* Record the three super-loop leg durations (DWT cycles), so a long loop period can
+ * be attributed to ethernet_lwip_poll / can_service_poll / can_udp_gateway_poll. */
+void can_udp_gateway_mark_legs(uint32_t ethCycles, uint32_t canCycles, uint32_t gwCycles)
+{
+    latency_stat_add(&s_ethPollLatency, ethCycles);
+    latency_stat_add(&s_canPollLatency, canCycles);
+    latency_stat_add(&s_gwPollLatency, gwCycles);
 }

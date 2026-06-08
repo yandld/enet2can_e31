@@ -11,8 +11,13 @@ ExecStartPre=/usr/libexec/mcxe31b-canbridge/setup-vcan.sh $IFACES
 ExecStart=/usr/sbin/canbridge --board $BOARD_IP --keepalive-ms $KEEPALIVE_MS --stats-ms $STATS_MS $IFACES
 Restart=always
 RestartSec=2
-# A little scheduling priority smooths CAN bursts; harmless if the kernel denies it.
-Nice=-5
+# Realtime scheduling so a delayed wakeup never bursts the CAN->UDP backlog onto the
+# board in one shot (the dominant source of the board's udp->can tail latency). The
+# daemon also calls mlockall(), which needs the memlock limit raised. Harmless if the
+# kernel denies RT -- the daemon falls back to normal scheduling.
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+LimitMEMLOCK=infinity
 
 [Install]
 WantedBy=multi-user.target
