@@ -167,6 +167,7 @@ sudo ./scripts/latency.sh 192.168.8.113
 ```bash
 sudo ./scripts/stress.sh 192.168.8.113            # 默认 1000 fps/路、64B、10s
 sudo ./scripts/stress.sh 192.168.8.113 2000       # 第二参数=速率/路,调高找无损天花板
+sudo ./scripts/stress.sh 192.168.8.113 2000 30    # 第三参数=时长(秒)
 ```
 
 ```

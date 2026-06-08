@@ -15,11 +15,12 @@
 # the board DWT figures are the product's own forwarding latency.
 #
 #   sudo ./stress.sh <board-ip>             # default: 1000 fps/ch, 64B, 10s
-#   sudo ./stress.sh <board-ip> 2000        # 2nd arg = rate; raise it to find the ceiling
+#   sudo ./stress.sh <board-ip> 2000        # 2nd arg = rate/ch; raise it to find the ceiling
+#   sudo ./stress.sh <board-ip> 2000 30     # 3rd arg = duration in seconds
 #
-# Rate is a positional arg on purpose: 'RATE=2000 sudo ...' does NOT work because
-# sudo drops the caller's env vars. To override other knobs, put them after sudo,
-# e.g. 'sudo IFACES="can0 can1" ./stress.sh <ip>'.
+# Rate and duration are positional on purpose: 'RATE=2000 sudo ...' does NOT work
+# because sudo drops the caller's env vars. To override other knobs, put them after
+# sudo, e.g. 'sudo IFACES="can0 can1" ./stress.sh <ip>'.
 # This is the LOSS/THROUGHPUT test. It does NOT report a latency max on purpose: under a
 # 6x1000fps flood that "max" is queueing, not forwarding latency. For the real latency,
 # run latency.sh (ping-style). DEBUG=1 re-enables the detailed board-internal latency
@@ -31,7 +32,7 @@ BOARD_IP="${1:-${BOARD_IP:-192.168.8.113}}"
 RATE="${2:-${RATE:-1000}}"    # frames/sec per channel each way; 2nd arg overrides
 IFACES="${IFACES:-can0 can1 can2 can3 can4 can5}"
 LEN="${LEN:-64}"              # FD payload bytes
-DURATION="${DURATION:-10}"
+DURATION="${3:-${DURATION:-10}}"  # seconds; 3rd arg overrides
 BITRATE="${BITRATE:-1000000}"
 DBITRATE="${DBITRATE:-5000000}"
 DEBUG="${DEBUG:-0}"          # 1 = show detailed board-internal latency debug (hidden from customers)
