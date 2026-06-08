@@ -1,28 +1,29 @@
 #!/bin/sh
-# latency.sh - ping-style latency of the MCXE31B canbridge. NOT a throughput test.
+# latency.sh - ping-style round-trip latency of the MCXE31B canbridge. NOT a throughput test.
 #
 # SPDX-License-Identifier: BSD-3-Clause
 #
-# Latency and throughput are different questions and want different tests (like ping vs
-# iperf). This one is the "ping": it runs at a LOW frame rate so there is ~1 frame in
-# flight at a time and the board's CAN bus never queues. The numbers it prints are the
-# REAL forwarding latency, not queueing under saturation. For loss/throughput at full
-# load, use stress.sh (which, on purpose, does NOT report a latency max -- under a flood
-# that "max" is queueing, not latency).
+# Like `ping`: send ONE CAN-FD frame through the board, wait for it to come back on the
+# partner channel, print that single round-trip, then repeat once per interval (Ctrl-C to
+# stop). One frame in flight at a time, so each printed RTT is the REAL forwarding latency
+# (Pi -> board -> CAN bus -> board -> Pi), never queueing. For loss/throughput at full
+# load use stress.sh instead (which, under a flood, does NOT report latency on purpose).
 #
-#   sudo ./latency.sh <board-ip>            # default: 100 fps/ch, 64B FD, 10s
-#   sudo ./latency.sh <board-ip> 50         # 2nd arg = rate/ch (keep it low)
+#   sudo ./latency.sh <board-ip>            # ping can0<->can1, 1/s, until Ctrl-C
+#   sudo ./latency.sh <board-ip> 0.2        # 2nd arg = interval seconds (like ping -i)
+#   sudo ./latency.sh <board-ip> 1 10       # 3rd arg = count (0/empty = infinite)
 #
-# Rate is a positional arg on purpose: 'RATE=50 sudo ...' does NOT work because sudo
-# drops the caller's env. Override other knobs after sudo, e.g. 'sudo IFACES="can0 can1"'.
-#   env knobs: RATE LEN DURATION BITRATE DBITRATE IFACES
+# Interval and count are positional on purpose: 'INTERVAL=.. sudo ...' does NOT work
+# because sudo drops the caller's env. Override other knobs after sudo, e.g.
+# 'sudo PAIR="can2 can3" ./latency.sh <ip>'.
+#   env knobs: PAIR LEN BITRATE DBITRATE
 set -u
 
 BOARD_IP="${1:-${BOARD_IP:-192.168.8.113}}"
-RATE="${2:-${RATE:-100}}"     # frames/sec per channel each way - LOW on purpose (ping-style)
-IFACES="${IFACES:-can0 can1 can2 can3 can4 can5}"
-LEN="${LEN:-64}"              # FD payload bytes
-DURATION="${DURATION:-10}"
+INTERVAL="${2:-${INTERVAL:-1}}"   # seconds between pings (2nd arg); lower = faster ping
+COUNT="${3:-${COUNT:-0}}"         # number of pings, 0 = until Ctrl-C (3rd arg)
+PAIR="${PAIR:-can0 can1}"         # the one wired bus pair to ping (TX iface, RX iface)
+LEN="${LEN:-64}"                  # FD payload bytes
 BITRATE="${BITRATE:-1000000}"
 DBITRATE="${DBITRATE:-5000000}"
 
@@ -31,41 +32,31 @@ CTL="${CTL:-$(command -v canbridge_ctl 2>/dev/null || echo "$HERE/../canbridge_c
 MESH="${MESH:-$HERE/../canmesh}"
 [ -x "$MESH" ] || { echo "missing canmesh (run 'make')"; exit 1; }
 
-echo "== latency: ping-style, ${RATE} fps/ch, ${LEN}B FD, ${DURATION}s  (board $BOARD_IP) =="
-echo "   low rate on purpose (~1 frame in flight): this is forwarding latency, not queueing."
+set -- $PAIR
+A="${1:-can0}"; B="${2:-can1}"
 
-# set FD bitrate on every channel, then zero the counters so the snapshot is this run only
-i=0
-for f in $IFACES; do
-    "$CTL" --board "$BOARD_IP" set_can_config channel="$i" enabled=true fd=true \
+echo "== latency: ping-style, $A<->$B, ${LEN}B FD, every ${INTERVAL}s  (board $BOARD_IP) =="
+echo "   one frame in flight: each line is REAL forwarding latency, not queueing (Ctrl-C to stop)."
+
+# set FD bitrate on every channel, then zero the counters so the footer is this run only
+for ch in 0 1 2 3 4 5; do
+    "$CTL" --board "$BOARD_IP" set_can_config channel="$ch" enabled=true fd=true \
         bitrate="$BITRATE" data_bitrate="$DBITRATE" brs=true >/dev/null 2>&1 \
-        || echo "WARN: set_can_config ch$i failed (board $BOARD_IP reachable?)"
-    i=$((i+1))
+        || echo "WARN: set_can_config ch$ch failed (board $BOARD_IP reachable?)"
 done
 "$CTL" --board "$BOARD_IP" reset_stats >/dev/null 2>&1
 
-TMPD=$(mktemp -d)
-trap 'rm -rf "$TMPD"' EXIT
-set -- $IFACES
-pids=""
-p=0
-while [ $# -ge 2 ]; do
-    a="$1"; b="$2"; shift 2
-    "$MESH" "$a" "$b" --rate "$((RATE*2))" --duration "$DURATION" --len "$LEN" >"$TMPD/p$p.out" 2>&1 &
-    pids="$pids $!"
-    p=$((p+1))
-done
-fail=0
-for pid in $pids; do
-    wait "$pid" || fail=1
-done
-cat "$TMPD"/p*.out 2>/dev/null   # per-bus roundtrip lines (latency here IS meaningful)
+# Run the ping in the foreground so its per-packet lines stream live. Ctrl-C reaches
+# canmesh (which prints its own ping summary) AND this script; trap it as a no-op so the
+# script survives to print the board-internal footer below.
+trap 'true' INT
+"$MESH" "$A" "$B" --ping --interval "$INTERVAL" --count "$COUNT" --len "$LEN"
+trap - INT
 
+# Footer: the board's own on-chip forwarding latency (DWT, host-clock free), printed once.
+# This is the slice of each ping spent INSIDE the board; the rest is Ethernet + the Pi.
 status=$("$CTL" --board "$BOARD_IP" get_status 2>/dev/null)
-rt_max=$(grep -ho 'max=[0-9.]*ms' "$TMPD"/p*.out 2>/dev/null | sed 's/max=//;s/ms//' | sort -gr | head -1)
-rt_avg=$(grep -ho 'avg=[0-9.]*ms' "$TMPD"/p*.out 2>/dev/null | sed 's/avg=//;s/ms//' | sort -gr | head -1)
-
-printf '%s' "$status" | awk -v rtmax="${rt_max:-0}" -v rtavg="${rt_avg:-0}" '
+printf '%s' "$status" | awk '
 function field(s, sect, key,   r) {
     if (match(s, "\"" sect "\":[{][^}]*[}]")) {
         r = substr(s, RSTART, RLENGTH)
@@ -79,19 +70,7 @@ function field(s, sect, key,   r) {
     u2ca = field($0, "udp_to_can", "avg"); u2cm = field($0, "udp_to_can", "max")
     c2ua = field($0, "can_to_udp", "avg"); c2um = field($0, "can_to_udp", "max")
     if (u2cm < 0) exit   # firmware without the latency block
-
-    print  "=== product latency (lightly loaded -- the REAL forwarding latency) ==="
-    printf "  board (on-chip UDP<->CAN, DWT):    udp->can avg=%dus max=%dus   can->udp avg=%dus max=%dus\n",
+    printf "board on-chip (DWT, real us):  udp->can avg=%dus max=%dus   can->udp avg=%dus max=%dus\n",
            u2ca, u2cm, c2ua, c2um
-    bmax = u2cm + c2um; bavg = u2ca + c2ua
-    if (rtmax + 0 > 0)
-        printf "  roundtrip (Pi<->board<->Pi):      avg=%.2f ms  max=%.2f ms\n", rtavg, rtmax
-    if (rtmax + 0 > 0) {
-        om = rtmax * 1000.0 - bmax; if (om < 0) om = 0
-        oa = rtavg * 1000.0 - bavg; if (oa < 0) oa = 0
-        printf "  network+host (roundtrip - board): avg=%.2f ms  max=%.2f ms\n", oa / 1000.0, om / 1000.0
-    }
-    printf "  => board forwarding ~%d us (<< 1 ms); the rest is Ethernet + the Pi.\n", bavg
+    printf "  => board forwarding ~%dus (<< 1 ms); the rest of each ping is Ethernet + the Pi.\n", u2ca + c2ua
 }'
-
-[ "$fail" = 0 ] || echo "note: a pair did not PASS. At this low rate that means wiring/termination/board, NOT load."

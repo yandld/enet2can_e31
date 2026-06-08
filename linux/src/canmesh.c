@@ -20,6 +20,11 @@
  *
  * SO_RXQ_OVFL still self-witnesses: tool_rx_overflow>0 means the tool dropped (lower
  * --rate); loss with tool_rx_overflow==0 is real product loss.
+ *
+ * --ping is a second, ping-style mode on a single pair: send ONE frame, wait for the
+ * board to return it, print that round-trip, repeat after --interval (Ctrl-C to stop).
+ * One frame in flight at a time, so the RTT it prints is real latency, never queueing.
+ *   canmesh can0 can1 --ping --interval 1
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -33,7 +38,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <poll.h>
 #include <sched.h>
+#include <signal.h>
 
 #include <net/if.h>
 #include <sys/epoll.h>
@@ -83,6 +90,13 @@ static void die(const char *m)
 {
     perror(m);
     exit(1);
+}
+
+/* Ctrl-C in ping mode: stop the loop and let it print the summary (like ping). */
+static void on_sigint(int sig)
+{
+    (void)sig;
+    g_stop = 1;
 }
 
 /* Best-effort realtime so the TEST TOOL's own scheduling jitter does not inflate the
@@ -197,6 +211,99 @@ static void *rx_thread(void *arg)
     return NULL;
 }
 
+/* Block on socket s until a frame with our magic and the wanted seq arrives, or the
+ * timeout expires. Returns the round-trip latency in ms (>=0), or -1 on timeout. The
+ * send time travels inside the frame (mesh_hdr.send_ns), so RTT = arrival - send_ns. */
+static double wait_echo(int s, uint32_t want_seq, double timeout_s)
+{
+    uint64_t deadline = now_ns() + (uint64_t)(timeout_s * 1e9);
+    struct pollfd pfd = {.fd = s, .events = POLLIN};
+
+    while (!g_stop) {
+        uint64_t now = now_ns();
+        if (now >= deadline) return -1.0;
+        int ms = (int)((deadline - now) / 1000000ULL);
+        int pr = poll(&pfd, 1, ms > 0 ? ms : 1);
+        if (pr <= 0) {
+            if (pr < 0 && errno == EINTR) continue; /* SIGINT -> g_stop checked by loop */
+            return -1.0;
+        }
+        struct canfd_frame f;
+        if (read(s, &f, CANFD_SZ) != CANFD_SZ || f.len < HDR_SZ) continue;
+        struct mesh_hdr h;
+        memcpy(&h, f.data, HDR_SZ);
+        if (h.magic != MAGIC || h.seq != want_seq) continue; /* skip foreign/stale frames */
+        uint64_t t = now_ns();
+        return (h.send_ns && t > h.send_ns) ? (double)(t - h.send_ns) / 1e6 : 0.0;
+    }
+    return -1.0;
+}
+
+/* ping-style latency: send ONE frame on 'a', wait for the board to bring it back on 'b',
+ * print that single round-trip, then repeat after 'interval'. One frame in flight at a
+ * time, so the printed RTT is the real forwarding latency (Pi->board->bus->board->Pi),
+ * never queueing. Prints a min/avg/max summary on exit (Ctrl-C or after 'count' pings). */
+static int run_ping(const char *a, const char *b, int length, int brs, unsigned base_id,
+                    long count, double interval)
+{
+    int sa = open_can(a);
+    int sb = open_can(b);
+    double timeout = interval > 1.0 ? interval : 1.0; /* wait at least 1s for a reply */
+
+    printf("PING %s -> %s (board round-trip), %dB FD, interval %.2gs\n", a, b, length, interval);
+    fflush(stdout);
+
+    long tx = 0, rx = 0;
+    double rmin = 0.0, rmax = 0.0, rsum = 0.0;
+    for (long seq = 0; (count <= 0 || seq < count) && !g_stop; seq++) {
+        struct timespec t_send;
+        clock_gettime(CLOCK_MONOTONIC, &t_send);
+
+        struct canfd_frame f;
+        memset(&f, 0, sizeof(f));
+        f.can_id = base_id;
+        f.len = (uint8_t)length;
+        f.flags = brs ? CANFD_BRS : 0;
+        struct mesh_hdr h = {MAGIC, (uint32_t)seq, 0, now_ns()};
+        memcpy(f.data, &h, HDR_SZ);
+        if (write(sa, &f, CANFD_SZ) != CANFD_SZ) {
+            fprintf(stderr, "seq=%ld: write failed (%s)\n", seq, strerror(errno));
+            break;
+        }
+        tx++;
+
+        double rtt = wait_echo(sb, (uint32_t)seq, timeout);
+        if (rtt >= 0.0) {
+            rx++;
+            if (rx == 1 || rtt < rmin) rmin = rtt;
+            if (rtt > rmax) rmax = rtt;
+            rsum += rtt;
+            printf("seq=%-4ld rtt=%.3f ms\n", seq, rtt);
+        } else {
+            printf("seq=%-4ld timeout\n", seq);
+        }
+        fflush(stdout);
+
+        if (interval > 0.0 && !g_stop && (count <= 0 || seq + 1 < count)) {
+            uint64_t add = (uint64_t)(interval * 1e9);
+            t_send.tv_nsec += (long)(add % 1000000000ULL);
+            t_send.tv_sec += (long)(add / 1000000000ULL);
+            while (t_send.tv_nsec >= 1000000000L) { t_send.tv_nsec -= 1000000000L; t_send.tv_sec++; }
+            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t_send, NULL); /* send-to-send cadence */
+        }
+    }
+
+    double loss = tx ? 100.0 * (double)(tx - rx) / (double)tx : 0.0;
+    printf("\n--- %s -> %s ping statistics ---\n", a, b);
+    printf("%ld transmitted, %ld received, %.0f%% loss\n", tx, rx, loss);
+    if (rx) printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rmin, rsum / (double)rx, rmax);
+    fflush(stdout);
+
+    close(sa);
+    close(sb);
+    return rx == tx ? 0 : 2;
+}
+
 int main(int argc, char **argv)
 {
     const char *ifaces[MAX_CH];
@@ -204,14 +311,19 @@ int main(int argc, char **argv)
     double rate = 4000.0, duration = 10.0;
     int length = 16, brs = 1;
     unsigned base_id = 0x100, seed = 1;
+    int ping = 0;             /* ping mode: one round-trip at a time, ping-style output */
+    long ping_count = 0;      /* 0 = until Ctrl-C */
+    double ping_interval = 1.0;
 
     static const struct option o[] = {
         {"rate", required_argument, 0, 'r'}, {"duration", required_argument, 0, 'd'},
         {"len", required_argument, 0, 'l'}, {"base-id", required_argument, 0, 'b'},
         {"no-brs", no_argument, 0, 'B'}, {"seed", required_argument, 0, 's'},
-        {"ifaces", no_argument, 0, 'i'}, {"help", no_argument, 0, 'h'}, {0, 0, 0, 0}};
+        {"ifaces", no_argument, 0, 'i'}, {"ping", no_argument, 0, 'p'},
+        {"count", required_argument, 0, 'c'}, {"interval", required_argument, 0, 'I'},
+        {"help", no_argument, 0, 'h'}, {0, 0, 0, 0}};
     int c;
-    while ((c = getopt_long(argc, argv, "r:d:l:b:Bs:ih", o, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:d:l:b:Bs:ipc:I:h", o, NULL)) != -1) {
         switch (c) {
         case 'r': rate = atof(optarg); break;
         case 'd': duration = atof(optarg); break;
@@ -220,10 +332,15 @@ int main(int argc, char **argv)
         case 'B': brs = 0; break;
         case 's': seed = (unsigned)atoi(optarg); break;
         case 'i': break; /* accept --ifaces, names follow as positional args */
+        case 'p': ping = 1; break;
+        case 'c': ping_count = atol(optarg); break;
+        case 'I': ping_interval = atof(optarg); break;
         case 'h':
         default:
-            fprintf(stderr, "usage: %s [--ifaces] can0 can1 ... [--rate fps] [--duration s]"
-                            " [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s [--ifaces] can0 can1 ... [--rate fps] [--duration s]\n"
+                    "       [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N]\n"
+                    "  ping: %s can0 can1 --ping [--interval s] [--count N]\n", argv[0], argv[0]);
             return c == 'h' ? 0 : 1;
         }
     }
@@ -236,6 +353,14 @@ int main(int argc, char **argv)
     if (n < 2) { fprintf(stderr, "need >= 2 interfaces on the shared bus\n"); return 1; }
     if (length < HDR_SZ) length = HDR_SZ;
     if (length > 64) length = 64;
+
+    /* ping mode: synchronous send/wait on just the first pair, one frame in flight. */
+    if (ping) {
+        try_realtime(50);
+        signal(SIGINT, on_sigint);
+        return run_ping(ifaces[0], ifaces[1], length, brs, base_id, ping_count, ping_interval);
+    }
+
     g_n = n;
     for (int i = 0; i < n; i++) g_sock[i] = open_can(ifaces[i]);
 
