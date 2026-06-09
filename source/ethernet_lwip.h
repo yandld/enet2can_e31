@@ -10,10 +10,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef enum
+{
+    ETHERNET_LWIP_IP_NONE = 0, /* link down, or link up but no address yet */
+    ETHERNET_LWIP_IP_DHCP,     /* address leased from a DHCP server */
+    ETHERNET_LWIP_IP_STATIC,   /* static fallback address (no DHCP) */
+} ethernet_lwip_ip_source_t;
+
 typedef struct
 {
     bool linkUp;
-    bool dhcpBound;
+    ethernet_lwip_ip_source_t ipSource;
     uint32_t ipv4Addr;
 } ethernet_lwip_status_t;
 

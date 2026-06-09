@@ -126,7 +126,7 @@ void status_led_poll(void)
     {
         net = false;
     }
-    else if (!eth.dhcpBound)
+    else if (eth.ipSource == ETHERNET_LWIP_IP_NONE)
     {
         net = (now % 500U) < 250U; /* ~2 Hz: link up, no IP yet */
     }

@@ -462,7 +462,7 @@ static void build_status_json(char *buffer, size_t size)
                 "\"config_status\":%u,\"config_status_text\":\"%s\",",
                 (unsigned)CAN_GATEWAY_VERSION,
                 json_bool(snapshot.ethernet.linkUp),
-                json_bool(snapshot.ethernet.dhcpBound),
+                json_bool(snapshot.ethernet.ipSource == ETHERNET_LWIP_IP_DHCP),
                 ipText,
                 (unsigned)snapshot.activeMask,
                 (unsigned)snapshot.configStatus,
