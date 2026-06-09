@@ -55,8 +55,14 @@ trap - INT
 
 # Footer: the board's own on-chip forwarding latency (DWT, host-clock free), printed once.
 # This is the slice of each ping spent INSIDE the board; the rest is Ethernet + the Pi.
+# Note: ping data flows through the running canbridge daemon, but this status query uses
+# the control plane (canbridge_ctl --board $BOARD_IP); a wrong/unreachable IP makes the
+# query fail, so warn loudly instead of silently dropping the board-latency line.
 status=$("$CTL" --board "$BOARD_IP" get_status 2>/dev/null)
-printf '%s' "$status" | awk '
+if [ -z "$status" ]; then
+    echo "board on-chip latency: board $BOARD_IP unreachable on control plane - pass the real board IP"
+else
+    printf '%s' "$status" | awk '
 function field(s, sect, key,   r) {
     if (match(s, "\"" sect "\":[{][^}]*[}]")) {
         r = substr(s, RSTART, RLENGTH)
@@ -69,8 +75,9 @@ function field(s, sect, key,   r) {
 {
     u2ca = field($0, "udp_to_can", "avg"); u2cm = field($0, "udp_to_can", "max")
     c2ua = field($0, "can_to_udp", "avg"); c2um = field($0, "can_to_udp", "max")
-    if (u2cm < 0) exit   # firmware without the latency block
+    if (u2cm < 0) { print "board on-chip latency: firmware does not report it (update board firmware)"; exit }
     printf "board on-chip (DWT, real us):  udp->can avg=%dus max=%dus   can->udp avg=%dus max=%dus\n",
            u2ca, u2cm, c2ua, c2um
     printf "  => board forwarding ~%dus (<< 1 ms); the rest of each ping is Ethernet + the Pi.\n", u2ca + c2ua
 }'
+fi

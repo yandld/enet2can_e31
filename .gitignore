@@ -1,6 +1,5 @@
 # Local reference drops
-docs/HW/
-docs/SDK_reference/
+docs/
 
 # Keil / MDK build output
 debug/
