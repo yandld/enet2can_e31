@@ -78,6 +78,11 @@ typedef struct
      * through the service queues for latency measurement only; NOT serialized
      * (the wire copies just the 16-byte head + payload, never the whole struct). */
     uint32_t ingress_cycles;
+    /* Loopback end-to-end: the down-frame's UDP-in DWT stamp (T0), carried onto
+     * the self-looped up-frame via a per-channel FIFO in can_service, so the
+     * gateway can report the full single-frame UDP-in -> CAN self-loop -> UDP-out
+     * span. Only set on loopback channels; 0 otherwise. NOT serialized. */
+    uint32_t origin_cycles;
 } can_gateway_frame_t;
 
 typedef struct

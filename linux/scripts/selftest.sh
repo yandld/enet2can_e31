@@ -66,9 +66,10 @@ else
 fi
 echo "bridge stats line:"; tail -n 2 /tmp/canbridge.log
 
-sep "7. PRESSURE TEST -- run separately (needs CAN buses wired)"
-echo "6ch x 1kHz TX+RX, 64B FD; wire pairs on independent buses (can0,can1)(can2,can3)(can4,can5):"
-echo "  sudo ./scripts/stress.sh $BOARD 2000      # 2nd arg = rate; raise it to find the ceiling"
+sep "7. PRESSURE / LATENCY TEST -- run separately (on-chip CAN loopback, no wiring)"
+echo "6ch x 1kHz TX+RX, 64B FD, via on-chip CAN loopback (no bus cabling/termination needed):"
+echo "  sudo ./scripts/stress.sh  $BOARD 2000      # throughput/loss; raise rate to find the ceiling"
+echo "  sudo ./scripts/latency.sh $BOARD           # per-channel round-trip latency (ping-style)"
 
 kill "$CB" 2>/dev/null
 sep "DONE -- paste this whole block back"

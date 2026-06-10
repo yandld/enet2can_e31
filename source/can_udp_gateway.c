@@ -54,10 +54,19 @@ static uint32_t s_expectedRxSequence;
 static uint32_t s_controlRxCount;
 static uint32_t s_controlTxCount;
 static tunnel_counter_t s_tunnel;
-/* CAN-in -> UDP-out latency: stamped at MB read in can_service, measured here at
- * the udp_sendto handoff. s_loopLatency tracks the super-loop period, which bounds
- * the un-instrumented "frame waits in MB/DMA for the next poll" component. */
+/* CAN-in -> UDP-out latency: stamped at MB read in can_service, measured here right
+ * AFTER udp_sendto (the MAC TX handoff), so the lwIP TX stack (IP/UDP/Ethernet build +
+ * ENET descriptor handoff) is inside the figure. s_loopLatency tracks the super-loop
+ * period, which bounds the un-instrumented "frame waits in MB/DMA for the next poll". */
 static latency_stat_t s_canToUdpLatency;
+/* MAC RX-pull instant of the current poll, set by main() just before ethernet_lwip_poll.
+ * The UDP RX callback runs synchronously inside that poll, so this is each down-frame's
+ * arrival-at-MAC instant (before the lwIP RX parse) - the latency origin. */
+static uint32_t s_ethRxEntryCycles;
+/* Loopback end-to-end: full single-frame span UDP-in -> CAN self-loop -> UDP-out
+ * (board-internal worst case). Only populated on loopback channels (origin_cycles
+ * carried from the down-frame by can_service); 0 count otherwise. */
+static latency_stat_t s_ethToEthLatency;
 static latency_stat_t s_loopLatency;
 static uint32_t s_loopLastCycles;
 static bool s_loopValid;
@@ -409,7 +418,7 @@ static void append_config_json(char *buffer,
                 size,
                 used,
                 "%s{\"ch\":%u,\"enabled\":%s,\"fd\":%s,\"bitrate\":%u,"
-                "\"data_bitrate\":%u,\"brs\":%s,\"filter\":\"%s\",\"filter_id\":%u,"
+                "\"data_bitrate\":%u,\"brs\":%s,\"loopback\":%s,\"filter\":\"%s\",\"filter_id\":%u,"
                 "\"filter_mask\":%u,\"tx_drop_policy\":\"%s\"}",
                 (channel == 0U) ? "" : ",",
                 (unsigned)channel,
@@ -418,6 +427,7 @@ static void append_config_json(char *buffer,
                 (unsigned)config->bitRate,
                 (unsigned)config->bitRateFD,
                 json_bool(config->brs),
+                json_bool(config->loopback),
                 filter_mode_to_json(config->filterMode),
                 (unsigned)config->filterId,
                 (unsigned)config->filterMask,
@@ -511,6 +521,7 @@ static void build_status_json(char *buffer, size_t size)
                     &used,
                     "\"latency_us\":{\"udp_to_can\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
                     "\"can_to_udp\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
+                    "\"eth_to_eth\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
                     "\"loop\":{\"count\":%u,\"avg\":%u,\"max\":%u},"
                     "\"eth_poll\":{\"avg\":%u,\"max\":%u},"
                     "\"can_poll\":{\"avg\":%u,\"max\":%u},"
@@ -521,6 +532,9 @@ static void build_status_json(char *buffer, size_t size)
                     (unsigned)s_canToUdpLatency.count,
                     (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_canToUdpLatency)),
                     (unsigned)latency_cycles_to_us(s_canToUdpLatency.maxCycles),
+                    (unsigned)s_ethToEthLatency.count,
+                    (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_ethToEthLatency)),
+                    (unsigned)latency_cycles_to_us(s_ethToEthLatency.maxCycles),
                     (unsigned)s_loopLatency.count,
                     (unsigned)latency_cycles_to_us(latency_stat_avg_cycles(&s_loopLatency)),
                     (unsigned)latency_cycles_to_us(s_loopLatency.maxCycles),
@@ -639,6 +653,7 @@ static uint16_t flush_rx_to_session(void)
     can_gateway_frame_t frame;
     can_gateway_packet_header_t header;
     uint32_t ingress[CAN_GATEWAY_MAX_FRAMES_PER_PACKET];
+    uint32_t origin[CAN_GATEWAY_MAX_FRAMES_PER_PACKET]; /* loopback T0, for end-to-end latency */
     uint32_t egressCycles;
     err_t err;
 
@@ -669,6 +684,7 @@ static uint16_t flush_rx_to_session(void)
             memcpy(&buf[off + CAN_GATEWAY_FRAME_HEAD_SIZE], frame.data, len);
         }
         ingress[n] = frame.ingress_cycles;
+        origin[n] = frame.origin_cycles;
         off += (uint16_t)(CAN_GATEWAY_FRAME_HEAD_SIZE + len);
         n++;
     }
@@ -689,8 +705,8 @@ static uint16_t flush_rx_to_session(void)
     memcpy(buf, &header, CAN_GATEWAY_PACKET_HEADER_SIZE);
 
     (void)pbuf_realloc(p, off);
-    egressCycles = latency_cycle_now(); /* UDP-out instant (handoff to lwIP) */
     err = udp_sendto(s_dataPcb, p, &s_sessionAddr, s_sessionPort);
+    egressCycles = latency_cycle_now(); /* MAC TX handoff: after lwIP/ENET output, just before the wire */
     pbuf_free(p);
 
     if (err == ERR_OK)
@@ -701,6 +717,10 @@ static uint16_t flush_rx_to_session(void)
             if (ingress[i] != 0U) /* error frames carry no stamp (0); skip them */
             {
                 latency_stat_add(&s_canToUdpLatency, (uint32_t)(egressCycles - ingress[i]));
+            }
+            if (origin[i] != 0U) /* loopback only: full UDP-in -> self-loop -> UDP-out span */
+            {
+                latency_stat_add(&s_ethToEthLatency, (uint32_t)(egressCycles - origin[i]));
             }
         }
         s_tunnel.txPackets++;
@@ -781,7 +801,9 @@ static void can_udp_gateway_data_recv(void *arg,
                                       const ip_addr_t *addr,
                                       uint16_t port)
 {
-    uint32_t ingressCycles = latency_cycle_now(); /* UDP-in instant for latency */
+    /* Origin = the MAC-RX-pull instant of this poll (set by main before ethernet_lwip_poll),
+     * so the lwIP RX stack is inside the latency. Fall back to now() if not yet set. */
+    uint32_t ingressCycles = (s_ethRxEntryCycles != 0U) ? s_ethRxEntryCycles : latency_cycle_now();
 
     (void)arg;
     (void)pcb;
@@ -852,6 +874,10 @@ static uint32_t apply_config_request(const char *request)
     {
         config.brs = boolValue;
     }
+    if (json_get_bool(request, "loopback", &boolValue))
+    {
+        config.loopback = boolValue;
+    }
     if (json_string_equals(request, "filter", "id_mask"))
     {
         config.filterMode = CAN_SERVICE_FILTER_ID_MASK;
@@ -888,6 +914,7 @@ static void reset_all_stats(void)
     s_controlRxCount = 0U;
     s_controlTxCount = 0U;
     latency_stat_reset(&s_canToUdpLatency);
+    latency_stat_reset(&s_ethToEthLatency);
     latency_stat_reset(&s_loopLatency);
     latency_stat_reset(&s_ethPollLatency);
     latency_stat_reset(&s_canPollLatency);
@@ -1031,6 +1058,11 @@ void can_udp_gateway_mark_loop(void)
     }
     s_loopLastCycles = now;
     s_loopValid = true;
+}
+
+void can_udp_gateway_mark_eth_rx(uint32_t cycles)
+{
+    s_ethRxEntryCycles = cycles;
 }
 
 /* Record the three super-loop leg durations (DWT cycles), so a long loop period can

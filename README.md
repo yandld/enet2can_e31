@@ -125,36 +125,38 @@ canbridge_ctl --board 192.168.8.113 get_status
 canbridge_ctl --board 192.168.8.113 reset_stats
 ```
 
-`set_can_config` 可改项:`channel`(0–5,必填)、`enabled`、`fd`、`bitrate`(50k–1M)、`data_bitrate`(500k–5M)、`brs`、`filter`(`accept_all`/`id_mask`)、`filter_id`、`filter_mask`、`tx_drop_policy`。运行时改配安全(单上下文 deinit→重配→重 init,无竞态)。
+`set_can_config` 可改项:`channel`(0–5,必填)、`enabled`、`fd`、`bitrate`(50k–1M)、`data_bitrate`(500k–5M)、`brs`、`loopback`(片内自环自测,免接线,见下方测试)、`filter`(`accept_all`/`id_mask`)、`filter_id`、`filter_mask`、`tx_drop_policy`。运行时改配安全(单上下文 deinit→重配→重 init,无竞态)。
 
 ## 测试:延迟 和 吞吐 
 
-### 延迟 —— `latency.sh`(类似 ping)
+### 延迟 —— `latency.sh`(类似 ping,片内自环,免接线)
 
-像 `ping`:每次只发 **1 帧**穿过板子、等它从对端通道回来、打印这一次往返,默认每秒一次(`Ctrl-C` 停)。同一时刻只有 1 帧在飞,所以每行 RTT 是**真实转发延迟**,不是排队:
+像 `ping`:每轮在**每条通道各发 1 帧**,板子把每帧在**片内 CAN 自环**(FlexCAN 自接收)后从**同一条通道**送回,打印这一轮各通道往返,默认每秒一次(`Ctrl-C` 停)。同一时刻每路只有 1 帧在飞,所以每行 RTT 是**真实往返**,不是排队。**不用接任何 CAN 线/终端电阻**——板子自环。
 
 ```bash
-sudo ./scripts/latency.sh 192.168.8.113          # ping can0<->can1,每秒一次,Ctrl-C 停
+sudo ./scripts/latency.sh 192.168.8.113          # 6 路同时 ping,每秒一次,Ctrl-C 停
 sudo ./scripts/latency.sh 192.168.8.113 0.2      # 第二参数=间隔秒(像 ping -i,调小更快)
 sudo ./scripts/latency.sh 192.168.8.113 1 10     # 第三参数=次数(0=无限)
 ```
 
 ```
-PING can0 -> can1 (board round-trip), 64B FD, interval 1s
-seq=0    rtt=0.412 ms
-seq=1    rtt=0.389 ms
-seq=2    rtt=0.451 ms
+PING loopback x6 (Pi->board->CAN-loopback->board->Pi), 64B FD, interval 1s
+seq=0     c0=1.072 c1=1.041 c2=1.058 c3=1.033 c4=1.049 c5=1.021  max=1.072 ms
+seq=1     c0=1.054 c1=1.032 c2=1.040 c3=1.025 c4=1.031 c5=1.011  max=1.054 ms
 ^C
---- can0 -> can1 ping statistics ---
-3 transmitted, 3 received, 0% loss
-rtt min/avg/max = 0.389/0.417/0.451 ms
-board on-chip (DWT, real us):  udp->can avg=18us max=27us   can->udp avg=21us max=33us
-  => board forwarding ~39us (<< 1 ms); the rest of each ping is Ethernet + the Pi.
+--- loopback ping statistics (6 channels) ---
+12 transmitted, 12 received, 0% loss
+  c0 rtt min/avg/max = 1.054/1.063/1.072 ms
+  ...
+board eth-to-eth latency (eth-in -> CAN loopback -> eth-out, real us):  MAX=340us  avg=210us
 ```
 
-- 每行 **rtt** 是 Pi→板→CAN 总线→板→Pi 整条往返(含 Pi 用户态收发)。
-- 末尾 **board on-chip** 是产品自身转发那一段(板载 DWT,微秒级,与主机时钟无关)——**这才是给客户看的延迟数**;rtt 减去它就是"网络 + Pi"的部分。
-- 默认 ping `can0<->can1`;换别的总线对:`sudo PAIR="can2 can3" ./scripts/latency.sh 192.168.8.113`。
+- 每行 **cN** 是该通道 Pi→板→CAN 片内自环→板→Pi 整条往返(含 Pi 用户态收发),`max` 是这一轮最慢的一路。
+- 末尾 **board eth-to-eth** 才是**唯一对客户有意义的数**:板子**自己用 DWT(微秒级,与主机时钟无关)测的同一帧最长内部路径**——从**网卡收到帧(MAC RX 取帧、lwIP 解析前)** 算起,经 CAN 片内自环返回,到**重新组好包递交网卡发送(MAC TX handoff)** 为止,**已包含 lwIP 收/发协议栈(eth/IP/UDP 解析与组头)的开销**。**`MAX` 就是产品板内最坏延迟**,给客户看这一个就够(数字为样例,实测以你的板子为准)。
+  - 仍在软件量程之外的只剩**纯硬件**那一点:MAC DMA + PHY 线上序列化(≈帧的线上时间),以及帧到达后在 RX 环里等下一次轮询的那段(上界 = 超级循环周期)。要真正"线上 SOF 到 SOF"得上 ENET 的 IEEE 1588 硬件打戳,可作后续选项。
+- 想看时间花在哪一段(`udp->can` / `can->udp` 分段,现已含 lwIP 那段)只为工程定位用,对客户无意义、默认隐藏:`sudo DEBUG=1 ./scripts/latency.sh 192.168.8.113`。
+- 只测部分通道:`sudo IFACES="can0 can1" ./scripts/latency.sh 192.168.8.113`(环境变量放 `sudo` 之后,否则被 sudo 丢弃)。脚本退出时会自动把 loopback 关掉,板子恢复正常总线转发。
+- **自环开 BRS(真跑 5M 数据相位)**:回环通道会按 RM 要求把 TDC 关掉(NXP SDK 在回环里只是跳过 TDC 配置、没真正关,于是复位默认 `ETDCEN=1` + 延迟测量开着,没有真实收发器可测 → SSP 放错 → 自发的 BRS 帧收不回)。固件显式 `ETDC=0` 后,片内自发的 5M BRS 帧也能自收(已在硬件上验证:6 路、0 错误),所以自环测试就是真实 FD+BRS,RTT 含真实快速相位空中时间。注意:回环仍绕过了收发器/线缆/终端电阻,**真实总线信号质量仍需接真实节点验证**。
 
 ### 吞吐 / 丢帧 —— `stress.sh`
 
@@ -167,13 +169,11 @@ sudo ./scripts/stress.sh 192.168.8.113 2000 30    # 第三参数=时长(秒)
 ```
 
 ```
-can0<->can1: 20000 rx, 0 lost (0.00%)  -> PASS
-can2<->can3: 20000 rx, 0 lost (0.00%)  -> PASS
-can4<->can5: 20000 rx, 0 lost (0.00%)  -> PASS
+can0..can5(6ch loopback): 60000 rx, 0 lost (0.00%)  -> PASS
 board: drops tx=0 rx=0 overflow=0 queue_full=0  |  peak queue tx=11/64 rx=3/64
 ALL PASS - 6 channels lossless at 1000 fps/ch
 ```
 
 - **lost=0** 就是不丢帧;`peak queue` 还剩大把余量(满 64)说明扛得住。
-- 台架把 6 路两两接成 3 条独立总线 `(can0,can1)(can2,can3)(can4,can5)`(各 120Ω×2),拿邻路当对端,等价客户现场 6 条独立总线。接线不够先接一条:`sudo IFACES="can0 can1" ./scripts/stress.sh 192.168.8.113`(环境变量放 `sudo` 之后,否则被 sudo 丢弃)。
-- 只有丢包时才打印板子各通道计数做归因:`state=error-passive` → 总线接线/终端;`rx_fifo_overflow` → 板子 RX 封顶;`queue_full/tx_drop` → 板子 TX 封顶。
+- 同样走**片内 CAN 自环,免接线**:每路自发自收,等价客户现场每路一条独立总线满载。只压部分通道:`sudo IFACES="can0 can1" ./scripts/stress.sh 192.168.8.113`(环境变量放 `sudo` 之后,否则被 sudo 丢弃)。脚本退出时自动关 loopback。
+- 只有丢包时才打印板子各通道计数做归因:`rx_fifo_overflow` → 板子 RX 封顶;`queue_full/tx_drop` → 板子 TX 封顶;自环下 `state` 不该是 error-passive(没有真实总线)。

@@ -25,6 +25,14 @@
  * board to return it, print that round-trip, repeat after --interval (Ctrl-C to stop).
  * One frame in flight at a time, so the RTT it prints is real latency, never queueing.
  *   canmesh can0 can1 --ping --interval 1
+ *
+ * --loopback drops the bus wiring entirely: the board puts each FlexCAN in internal
+ * loopback (self-reception), so a frame sent on can_i returns on can_i. Each iface then
+ * self-loops and the round-trip is Pi->board->CAN-loopback->board->Pi. In mesh mode each
+ * frame is expected exactly ONCE (on its own channel); in --ping mode every iface is
+ * pinged at once (the 6-channels-simultaneously latency test). Enable board loopback via
+ * canbridge_ctl set_can_config loopback=true first (the latency.sh/stress.sh scripts do).
+ *   canmesh can0 can1 can2 can3 can4 can5 --ping --loopback
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -304,6 +312,120 @@ static int run_ping(const char *a, const char *b, int length, int brs, unsigned 
     return rx == tx ? 0 : 2;
 }
 
+/* loopback ping: each round, fire ONE frame on EVERY iface "simultaneously"; the board
+ * loops each frame back on-chip (FlexCAN self-reception) and returns it on the SAME
+ * channel, so the round-trip is Pi->board->CAN-loopback->board->Pi - no bus wiring. One
+ * socket per iface with CAN_RAW_RECV_OWN_MSGS=0 means we never see our own send (the vcan
+ * local echo), only the genuine board return. Prints one line per round (per-channel RTT
+ * + the slowest of the round) and a per-channel min/avg/max summary on exit. */
+static int run_ping_loopback(const char **ifaces, int n, int length, int brs,
+                             unsigned base_id, long count, double interval)
+{
+    int s[MAX_CH];
+    for (int i = 0; i < n; i++) s[i] = open_can(ifaces[i]);
+    double timeout = interval > 1.0 ? interval : 1.0; /* wait at least 1s for replies */
+
+    printf("PING loopback x%d (Pi->board->CAN-loopback->board->Pi), %dB FD, interval %.2gs\n",
+           n, length, interval);
+    fflush(stdout);
+
+    long tx = 0, rx = 0;
+    long ch_rx[MAX_CH] = {0};
+    double ch_min[MAX_CH] = {0}, ch_max[MAX_CH] = {0}, ch_sum[MAX_CH] = {0};
+
+    for (long seq = 0; (count <= 0 || seq < count) && !g_stop; seq++) {
+        struct timespec t_send;
+        clock_gettime(CLOCK_MONOTONIC, &t_send);
+
+        /* fire one frame on every channel, stamping each just before its own write */
+        for (int i = 0; i < n; i++) {
+            struct canfd_frame f;
+            memset(&f, 0, sizeof(f));
+            f.can_id = base_id + (unsigned)i;
+            f.len = (uint8_t)length;
+            f.flags = brs ? CANFD_BRS : 0;
+            struct mesh_hdr h = {MAGIC, (uint32_t)seq, (uint8_t)i, now_ns()};
+            memcpy(f.data, &h, HDR_SZ);
+            if (write(s[i], &f, CANFD_SZ) == CANFD_SZ) tx++;
+        }
+
+        /* collect all N returns (each on its own socket) until done or timeout */
+        double rtt[MAX_CH];
+        int got[MAX_CH];
+        for (int i = 0; i < n; i++) { rtt[i] = -1.0; got[i] = 0; }
+        int remaining = n;
+        uint64_t deadline = now_ns() + (uint64_t)(timeout * 1e9);
+        while (remaining > 0 && !g_stop) {
+            uint64_t now = now_ns();
+            if (now >= deadline) break;
+            int ms = (int)((deadline - now) / 1000000ULL);
+            struct pollfd pfd[MAX_CH];
+            for (int i = 0; i < n; i++) { pfd[i].fd = s[i]; pfd[i].events = POLLIN; pfd[i].revents = 0; }
+            int pr = poll(pfd, (nfds_t)n, ms > 0 ? ms : 1);
+            if (pr < 0) { if (errno == EINTR) continue; break; }
+            if (pr == 0) continue; /* deadline re-checked at loop top */
+            for (int i = 0; i < n; i++) {
+                if (got[i] || !(pfd[i].revents & POLLIN)) continue;
+                struct canfd_frame f;
+                if (read(s[i], &f, CANFD_SZ) != CANFD_SZ || f.len < HDR_SZ) continue;
+                struct mesh_hdr h;
+                memcpy(&h, f.data, HDR_SZ);
+                if (h.magic != MAGIC || h.seq != (uint32_t)seq) continue; /* stale/foreign */
+                uint64_t t = now_ns();
+                rtt[i] = (h.send_ns && t > h.send_ns) ? (double)(t - h.send_ns) / 1e6 : 0.0;
+                got[i] = 1;
+                remaining--;
+            }
+        }
+
+        /* one line per round: per-channel RTT + the slowest channel of the round */
+        char line[256];
+        int p = 0;
+        double rmax = -1.0;
+        p += snprintf(line + p, sizeof(line) - (size_t)p, "seq=%-4ld", seq);
+        for (int i = 0; i < n; i++) {
+            if (got[i]) {
+                p += snprintf(line + p, sizeof(line) - (size_t)p, " c%d=%.3f", i, rtt[i]);
+                rx++;
+                ch_rx[i]++;
+                if (ch_rx[i] == 1 || rtt[i] < ch_min[i]) ch_min[i] = rtt[i];
+                if (rtt[i] > ch_max[i]) ch_max[i] = rtt[i];
+                ch_sum[i] += rtt[i];
+                if (rtt[i] > rmax) rmax = rtt[i];
+            } else {
+                p += snprintf(line + p, sizeof(line) - (size_t)p, " c%d=--", i);
+            }
+        }
+        if (rmax >= 0.0) snprintf(line + p, sizeof(line) - (size_t)p, "  max=%.3f ms", rmax);
+        else snprintf(line + p, sizeof(line) - (size_t)p, "  (all timeout)");
+        printf("%s\n", line);
+        fflush(stdout);
+
+        if (interval > 0.0 && !g_stop && (count <= 0 || seq + 1 < count)) {
+            uint64_t add = (uint64_t)(interval * 1e9);
+            t_send.tv_nsec += (long)(add % 1000000000ULL);
+            t_send.tv_sec += (long)(add / 1000000000ULL);
+            while (t_send.tv_nsec >= 1000000000L) { t_send.tv_nsec -= 1000000000L; t_send.tv_sec++; }
+            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t_send, NULL); /* send-to-send cadence */
+        }
+    }
+
+    double loss = tx ? 100.0 * (double)(tx - rx) / (double)tx : 0.0;
+    printf("\n--- loopback ping statistics (%d channels) ---\n", n);
+    printf("%ld transmitted, %ld received, %.0f%% loss\n", tx, rx, loss);
+    for (int i = 0; i < n; i++) {
+        if (ch_rx[i])
+            printf("  c%d rtt min/avg/max = %.3f/%.3f/%.3f ms\n",
+                   i, ch_min[i], ch_sum[i] / (double)ch_rx[i], ch_max[i]);
+        else
+            printf("  c%d no replies - is board loopback enabled on this channel?\n", i);
+    }
+    fflush(stdout);
+
+    for (int i = 0; i < n; i++) close(s[i]);
+    return rx == tx ? 0 : 2;
+}
+
 int main(int argc, char **argv)
 {
     const char *ifaces[MAX_CH];
@@ -312,6 +434,7 @@ int main(int argc, char **argv)
     int length = 16, brs = 1;
     unsigned base_id = 0x100, seed = 1;
     int ping = 0;             /* ping mode: one round-trip at a time, ping-style output */
+    int loopback = 0;         /* board-loopback mode: each channel self-loops, no wiring */
     long ping_count = 0;      /* 0 = until Ctrl-C */
     double ping_interval = 1.0;
 
@@ -320,10 +443,11 @@ int main(int argc, char **argv)
         {"len", required_argument, 0, 'l'}, {"base-id", required_argument, 0, 'b'},
         {"no-brs", no_argument, 0, 'B'}, {"seed", required_argument, 0, 's'},
         {"ifaces", no_argument, 0, 'i'}, {"ping", no_argument, 0, 'p'},
+        {"loopback", no_argument, 0, 'L'},
         {"count", required_argument, 0, 'c'}, {"interval", required_argument, 0, 'I'},
         {"help", no_argument, 0, 'h'}, {0, 0, 0, 0}};
     int c;
-    while ((c = getopt_long(argc, argv, "r:d:l:b:Bs:ipc:I:h", o, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:d:l:b:Bs:ipLc:I:h", o, NULL)) != -1) {
         switch (c) {
         case 'r': rate = atof(optarg); break;
         case 'd': duration = atof(optarg); break;
@@ -333,14 +457,17 @@ int main(int argc, char **argv)
         case 's': seed = (unsigned)atoi(optarg); break;
         case 'i': break; /* accept --ifaces, names follow as positional args */
         case 'p': ping = 1; break;
+        case 'L': loopback = 1; break;
         case 'c': ping_count = atol(optarg); break;
         case 'I': ping_interval = atof(optarg); break;
         case 'h':
         default:
             fprintf(stderr,
                     "usage: %s [--ifaces] can0 can1 ... [--rate fps] [--duration s]\n"
-                    "       [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N]\n"
-                    "  ping: %s can0 can1 --ping [--interval s] [--count N]\n", argv[0], argv[0]);
+                    "       [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N] [--loopback]\n"
+                    "  ping (wired pair): %s can0 can1 --ping [--interval s] [--count N]\n"
+                    "  ping (loopback)  : %s can0..can5 --ping --loopback   (each channel self-loops)\n",
+                    argv[0], argv[0], argv[0]);
             return c == 'h' ? 0 : 1;
         }
     }
@@ -350,14 +477,16 @@ int main(int argc, char **argv)
         for (int i = 0; i < MAX_CH; i++) ifaces[i] = def[i];
         n = MAX_CH;
     }
-    if (n < 2) { fprintf(stderr, "need >= 2 interfaces on the shared bus\n"); return 1; }
+    if (!loopback && n < 2) { fprintf(stderr, "need >= 2 interfaces on the shared bus (or use --loopback)\n"); return 1; }
     if (length < HDR_SZ) length = HDR_SZ;
     if (length > 64) length = 64;
 
-    /* ping mode: synchronous send/wait on just the first pair, one frame in flight. */
+    /* ping mode: synchronous send/wait, one frame in flight (per channel). */
     if (ping) {
         try_realtime(50);
         signal(SIGINT, on_sigint);
+        if (loopback)
+            return run_ping_loopback(ifaces, n, length, brs, base_id, ping_count, ping_interval);
         return run_ping(ifaces[0], ifaces[1], length, brs, base_id, ping_count, ping_interval);
     }
 
@@ -399,13 +528,17 @@ int main(int argc, char **argv)
     g_stop = 1;
     pthread_join(rxt, NULL);
 
-    uint64_t expected = sent * (uint64_t)(n - 1);
+    /* loopback: each frame returns once on its OWN channel (self-loop); shared-bus mesh:
+     * each frame appears once on every other channel, so sent*(n-1). */
+    uint64_t expected = loopback ? sent : sent * (uint64_t)(n - 1);
     uint64_t rx = st_rx;
     long long loss = (long long)expected - (long long)rx;
     double loss_rate = expected ? (double)loss / (double)expected * 100.0 : 0.0;
 
     char label[64];
-    if (n == 2)
+    if (loopback)
+        snprintf(label, sizeof(label), "%s..%s(%dch loopback)", ifaces[0], ifaces[n - 1], n);
+    else if (n == 2)
         snprintf(label, sizeof(label), "%s<->%s", ifaces[0], ifaces[1]);
     else
         snprintf(label, sizeof(label), "%s..%s(%dch mesh)", ifaces[0], ifaces[n - 1], n);
@@ -435,7 +568,8 @@ int main(int argc, char **argv)
     } else {
         p += snprintf(out + p, sizeof(out) - (size_t)p, "  -> FAIL\n");
         p += snprintf(out + p, sizeof(out) - (size_t)p, "    %s\n",
-                      rx == 0 ? "no frames returned - check bus wiring & 120R x2=60R termination"
+                      rx == 0 ? (loopback ? "no frames returned - is board loopback enabled on these channels?"
+                                          : "no frames returned - check bus wiring & 120R x2=60R termination")
                               : "real product loss - see board counters below");
         rc = 2;
     }

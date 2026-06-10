@@ -137,6 +137,7 @@ int main(void)
 
         can_udp_gateway_mark_loop();
         t0 = latency_cycle_now();
+        can_udp_gateway_mark_eth_rx(t0); /* MAC-RX-pull instant: origin for eth-to-eth latency */
         ethernet_lwip_poll();
         t1 = latency_cycle_now();
         can_service_poll();

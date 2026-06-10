@@ -89,6 +89,14 @@ typedef struct
     uint8_t txTail;
     uint8_t txQueued;
 
+    /* Loopback end-to-end latency: FIFO of pending UDP-in stamps (T0). Pushed when a
+     * down-frame is written to a TX mailbox, popped when its self-looped copy is read
+     * back, so the up-frame carries T0 to the gateway. Only used when loopback is on. */
+    uint32_t e2eRing[CAN_SERVICE_E2E_RING_SIZE];
+    uint8_t e2eHead;
+    uint8_t e2eTail;
+    uint8_t e2eCount;
+
     union
     {
         flexcan_frame_t classic;
@@ -183,6 +191,7 @@ static can_service_config_t can_default_config(bool enabled)
     config.enabled = enabled;
     config.useFD = (bool)CAN_USE_CANFD;
     config.brs = true;
+    config.loopback = false;
     config.bitRate = CAN_BITRATE;
     config.bitRateFD = CAN_FD_BITRATE;
     config.filterMode = CAN_SERVICE_FILTER_ACCEPT_ALL;
@@ -201,6 +210,9 @@ static void can_reset_queues(can_channel_t *ch)
     ch->txHead = 0U;
     ch->txTail = 0U;
     ch->txQueued = 0U;
+    ch->e2eHead = 0U;
+    ch->e2eTail = 0U;
+    ch->e2eCount = 0U;
     ch->status.rxQueued = 0U;
     ch->status.txQueued = 0U;
     ch->errorFramePending = false;
@@ -455,7 +467,11 @@ static void can_init_channel(can_channel_t *ch)
     FLEXCAN_GetDefaultConfig(&cfg);
     cfg.bitRate = ch->bitRate;
     cfg.maxMbNum = channel_max_mb(plan);
-    cfg.disableSelfReception = true;
+    /* Internal loopback (LPB) needs self-reception ON so the looped-back frame lands in an
+     * Rx mailbox; normal operation keeps self-reception OFF. CAN-FD BRS self-reception works
+     * in loopback too, but only after disabling TDC (see the ETDC fix right after FDInit). */
+    cfg.enableLoopBack = ch->config.loopback;
+    cfg.disableSelfReception = ch->config.loopback ? false : true;
     cfg.enableIndividMask = true; /* MCR[IRMQ]=1: the Rx MB bank acts as a reception queue */
 
     memset(&timing, 0, sizeof(timing));
@@ -480,6 +496,21 @@ static void can_init_channel(can_channel_t *ch)
             memcpy(&cfg.timingConfig, &timing, sizeof(timing));
         }
         FLEXCAN_Init(ch->base, &cfg, ch->clkFreq);
+    }
+
+    /* CAN-FD BRS in internal loopback: the SDK's FDInit guards its TDC/ETDC setup with
+     * `brs && !enableLoopBack`, so in loopback it never touches ETDC and the reset default
+     * (ETDCEN=1, transceiver-delay measurement ON) survives. With no real transceiver to
+     * measure, that places the Secondary Sample Point wrong and a self-transmitted BRS (5M)
+     * frame fails its own bit monitoring. The RM requires TDC OFF under loopback, so do that
+     * here -> BRS self-reception works (verified on hardware: 6ch, 0 errors). Only loopback
+     * channels are touched; the real-bus path keeps the SDK's normal TDC configuration. */
+    if (ch->config.loopback && ch->useFD)
+    {
+        (void)FLEXCAN_EnterFreezeMode(ch->base);
+        ch->base->ETDC = 0U; /* ETDCEN=0: enhanced TDC fully disabled */
+        ch->base->FDCTRL &= ~(CAN_FDCTRL_TDCEN_MASK | CAN_FDCTRL_TDCOFF_MASK); /* legacy TDC off too */
+        (void)FLEXCAN_ExitFreezeMode(ch->base);
     }
 
     /* No handle / no interrupts: everything is polled (see file header). With IRMQ
@@ -620,6 +651,37 @@ static int8_t can_find_free_tx_mb(const can_channel_t *ch)
     return -1;
 }
 
+/* Per-channel FIFO of pending UDP-in stamps (T0) for loopback end-to-end latency.
+ * Push when a frame goes out on a loopback TX mailbox; pop when its self-looped copy
+ * is read back. On the 0-loss loopback path push/pop stay paired, so the popped stamp
+ * belongs to the frame just received. Overflow (never expected: in-flight <= TX MBs +
+ * RX MB bank) abandons the stale backlog rather than desyncing the pairing. */
+static void can_e2e_push(can_channel_t *ch, uint32_t t0)
+{
+    if (ch->e2eCount >= CAN_SERVICE_E2E_RING_SIZE)
+    {
+        ch->e2eTail = ch->e2eHead;
+        ch->e2eCount = 0U;
+    }
+    ch->e2eRing[ch->e2eHead] = t0;
+    ch->e2eHead = (uint8_t)((ch->e2eHead + 1U) % CAN_SERVICE_E2E_RING_SIZE);
+    ch->e2eCount++;
+}
+
+static uint32_t can_e2e_pop(can_channel_t *ch)
+{
+    uint32_t t0;
+
+    if (ch->e2eCount == 0U)
+    {
+        return 0U;
+    }
+    t0 = ch->e2eRing[ch->e2eTail];
+    ch->e2eTail = (uint8_t)((ch->e2eTail + 1U) % CAN_SERVICE_E2E_RING_SIZE);
+    ch->e2eCount--;
+    return t0;
+}
+
 /* Write a queued TX frame into a free TX mailbox (polled, no interrupt). */
 static uint32_t can_start_tx(can_channel_t *ch, uint8_t localMb, const can_gateway_frame_t *frame)
 {
@@ -654,6 +716,10 @@ static uint32_t can_start_tx(can_channel_t *ch, uint8_t localMb, const can_gatew
     if (frame->ingress_cycles != 0U)
     {
         latency_stat_add(&s_udpToCanLatency, (uint32_t)(latency_cycle_now() - frame->ingress_cycles));
+        if (ch->config.loopback)
+        {
+            can_e2e_push(ch, frame->ingress_cycles); /* carry T0 to the self-looped copy */
+        }
     }
     return CAN_GATEWAY_STATUS_OK;
 }
@@ -893,6 +959,9 @@ static void can_drain_mb_bank(can_channel_t *ch)
             can_fill_rx_from_classic(ch, &ch->rxFrame.classic, &frame);
         }
         frame.ingress_cycles = latency_cycle_now(); /* CAN-in instant (MB read) for latency */
+        /* Loopback: recover the down-frame's UDP-in stamp so the gateway can report the
+         * full single-frame end-to-end span (UDP-in -> CAN self-loop -> UDP-out). */
+        frame.origin_cycles = ch->config.loopback ? can_e2e_pop(ch) : 0U;
         can_store_rx_frame(ch, &frame);
         budget--;
     }

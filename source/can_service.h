@@ -22,6 +22,9 @@
 #define CAN_SERVICE_RX_DRAIN_MAX 48U
 /* Max TX message buffers per channel (all channels use 2). */
 #define CAN_SERVICE_MAX_TX_MB 2U
+/* Per-channel FIFO of pending UDP-in stamps for loopback end-to-end latency.
+ * Bounds in-flight frames (TX MBs + RX MB bank); 16 leaves ample margin. */
+#define CAN_SERVICE_E2E_RING_SIZE 16U
 
 #define CAN_BITRATE 1000000U
 #define CAN_USE_CANFD 1
@@ -64,6 +67,8 @@ typedef struct
     bool enabled;
     bool useFD;
     bool brs;
+    bool loopback; /* internal self-test loopback: TX is looped back to RX on-chip,
+                    * self-ACKed, no bus/transceiver needed (for the no-wiring tests) */
     uint32_t bitRate;
     uint32_t bitRateFD;
     can_service_filter_mode_t filterMode;
