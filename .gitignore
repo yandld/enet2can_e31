@@ -1,0 +1,26 @@
+# 构建产物
+build/
+*.o
+*.axf
+*.bin
+*.map
+*.htm
+
+# Linux 内核模块构建产物(可部署的 eth2can.ko 例外,随仓库发布)
+linux/*.ko
+!linux/eth2can.ko
+linux/*.mod
+linux/*.mod.c
+linux/*.mod.o
+linux/modules.order
+linux/Module.symvers
+.*.cmd
+
+# Keil/MDK 临时文件
+*.uvguix.*
+*.scvd
+DebugConfig/
+RTE/_*
+
+# 部署 bundle
+linux/*.tgz

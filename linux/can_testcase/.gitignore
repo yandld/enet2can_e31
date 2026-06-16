@@ -1,0 +1,5 @@
+# 交叉编译的 canperf(aarch64 静态)随仓库发布,不忽略
+canperf.host
+results/
+results.tar
+pair-*.csv
