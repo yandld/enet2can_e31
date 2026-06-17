@@ -25,7 +25,7 @@ TX 聚合,协议逻辑(本文件的窗口/TXC/EVT/CFG 部分)原样保留。
   唤醒队列 —— **TXC 是唯一流控**(协议 §6.2),窗口满即 stop_queue。
 - bittiming 走标准 netlink(`ip link set ... type can bitrate ...`):
   bittiming_const 按 FlexCAN@80MHz(nominal tseg1≤96/tseg2≤32,
-  data tseg1≤39/tseg2≤8);`ndo_open` 序列 = STOP→SET_BITRATE→START,
+  data tseg1≤32/tseg2≤16);`ndo_open` 序列 = STOP→SET_BITRATE→START,
   CFG 带 token,10ms 超时 ×3 重试,MCU 幂等。
 - EVT → `can_change_state`/`can_bus_off` + 错误帧(含 RX overflow);
   HB 双向 100ms,500ms 超时 → 全部 carrier off,恢复即 carrier on。

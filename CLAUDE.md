@@ -42,8 +42,10 @@ and RX buffers live in cacheable SRAM). Remaining Makefile/Keil divergence is no
 Keil assembles `utilities/fsl_memcpy.S` (CLI uses libc memcpy) and uses a higher -O level.
 
 No automated tests. Runtime verification = UART debug console @115200 (single keys: `0..5` log
-level, `m` module mask, `s` dump stats, `?` help) plus the periodic stats line (every 3 s,
-`E2CF_STATS_PERIOD_MS`). Bring-up knobs in `source/e2cf_config.h`: `E2CF_AUTOSTART_CHANNELS=1`
+level, `m` module mask, `s` dump stats, `?` help). The periodic UART stats line is **off by
+default** (`E2CF_STATS_PERIOD_MS=0`; set e.g. 3000 for standalone bench bring-up); stats are
+instead pushed in-band at 1 Hz via `E2CF_MSG_STATS`. Bring-up knobs in `source/e2cf_config.h`:
+`E2CF_AUTOSTART_CHANNELS=1`
 (default, auto-START all channels and disarm safe state until first HB),
 `E2CF_AUTOSTART_LOOPBACK=1` (transceiver-less self-test; requires TDC off — already handled).
 
@@ -85,7 +87,9 @@ Linux `echo_skb_max` — these must stay equal); Linux stops the queue when full
 the slot. CFG is token-matched request/response (10 ms timeout ×3 retries, MCU idempotent via
 token cache). HB every 100 ms both ways; 500 ms silence → Linux carriers off all 6 devs, MCU
 enters safe state (stops all CAN TX). Data plane never retransmits or reorders — only counts
-seq gaps. Aggregation: MCU→Linux T_agg = 50 µs is mandatory; egress-idle sends immediately.
+seq gaps. Aggregation: MCU→Linux T_agg = 50 µs is mandatory; a partial frame is sealed only by
+the T_agg deadline, the 17-record cap, or face overflow (the old "egress-idle sends immediately"
+rule was removed — it defeated batching).
 
 ### MCU firmware (`source/`)
 
@@ -100,9 +104,8 @@ The data plane runs entirely in ISRs; the superloop only handles deadlines and s
   by 16-bit timestamp (with IRMQ, MB index order ≠ arrival order). CAN0's Enhanced RX FIFO is
   parked: enabled, its RX interrupt never fired on this silicon (flags appear to route to the
   unserved MB32-63 line) — Phase 2 must fix the line routing before reviving eFIFO+eDMA. Records
-  append into DTCM aggregation "faces"; flush on 17 records / face full / 50 µs deadline /
-  egress idle.
-- **ETH→CAN (EMAC ISR, prio 2)**: zero-copy EQOS RX → demux → DATA records into per-channel
+  append into DTCM aggregation "faces"; flush on 17 records / face full / 50 µs T_agg deadline.
+- **ETH→CAN (EMAC ISR, prio 1 — same level as CAN, no mutual preemption)**: zero-copy EQOS RX → demux → DATA records into per-channel
   16-deep `sw_txfifo` feeding a **single active TX MB** (strict per-channel ordering — multiple
   TX MBs would arbitrate by CAN ID and reorder; spec §6.3). CFG ops (including full
   `FLEXCAN_Init` / freeze-mode work) execute synchronously inside this ISR.
@@ -135,8 +138,8 @@ transport with `enetc4_ecat_fast_*_k` variants — protocol logic stays.
 - Scatter file `MCXE31B/mdk/MCXE31B_flash.scf`. Boot header IVT at flash 0x0040_0000
   (`boot_header/boot_header.c`, `BOOT_HEADER_ENABLE=1`) is mandatory — the SBAF boot ROM needs it
   to find the vector table at 0x0040_1000; removing it = non-booting image.
-- First 16 KB of DTCM = non-cacheable region holding EQOS descriptor rings + the 6×1536 B
-  zero-copy TX faces. MPU region sizing in `board.c` is computed from the
+- First 16 KB of DTCM = non-cacheable region holding EQOS descriptor rings + the 8×1536 B
+  zero-copy TX faces (`E2CF_ETH_TXFACE_NUM`, raised 6→8). MPU region sizing in `board.c` is computed from the
   `RW_m_ncache`/`RW_m_ncache_unused` linker symbols — keep those region names. EMAC RX buffers
   live in cacheable SRAM and rely on driver invalidation (`FSL_ETH_ENABLE_CACHE_CONTROL`).
 - Stack is deliberately 8 KB (SDK default 0x400 overflowed in the donor project) — don't shrink.

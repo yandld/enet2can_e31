@@ -3,8 +3,25 @@
 **版本:** v1.0-draft1
 **日期:** 2026-06-11
 **目标内核:** Real-Time Edge Linux(本仓库 `real-time-edge-linux`,6.18.20-rt,PREEMPT_RT)
-**目标硬件:** i.MX95,ENETC4 端口之一(独占)
+**目标硬件:** i.MX95,ENETC4 端口之一(Phase-2 独占;**Phase-1 不独占**,见下)
 **配套文档:** 《01_E2CF协议规范》《03_MCXE侧详细设计》
+
+---
+
+> ## ⚠️ 阶段说明(2026-06-17 校准)
+>
+> **本文描述的是 Phase-2 目标设计**(ENETC4 fast-path `_k` 变体 + SCHED_FIFO 收发线程 + TX 聚合器 + skb 池),**尚未实现**。当前**已交付并入库的 Phase-1 驱动**(`linux/src/eth2can.c`)实现完全相同的**协议逻辑**(窗口/TXC/EVT/CFG/HB/安全态),但**传输层不同**。下面各节凡属 Phase-2 机制处标 “(Phase-2)”。设备名是 **`eth2can0..5`**(不是 `can0..5`)。
+>
+> | 维度 | **Phase-1(已交付,本仓库代码)** | Phase-2(本文设计) |
+> |---|---|---|
+> | RX 截获 | `dev_add_pack(0x88B5)`,**不独占网口**,其余流量照走协议栈 | `enetc4_ecat_fast_recv_k` 独占 ENETC4 口 |
+> | TX | `dev_queue_xmit()` 逐帧直发 | TX 聚合器 + `enetc4_ecat_fast_xmit_k` |
+> | 线程 | 无(RX 在 softirq;TX 在调用者上下文) | RX/TX 各一条 SCHED_FIFO kthread |
+> | TX 槽位 | `echo_busy` 位图 + `find_first_zero_bit`,窗口满 `netif_stop_queue` 并回 `NETDEV_TX_BUSY` | `tx_head` 模计数 + `inflight` 计数 |
+> | skb | 每帧 `alloc_can(fd)_skb`(失败计 `rx_dropped`) | 预分配 skb 池 + GFP_ATOMIC 兜底 |
+> | netdev flag | **仅 `IFF_ECHO`**,走标准 qdisc(并处理 `NET_XMIT_CN`) | + `IFF_NO_QUEUE` noqueue 直通 |
+> | Linux→MCU 聚合 | **逐帧直发,无 T_agg 定时器**(协议默认) | hrtimer `HARD` T_agg 聚合 |
+> | 统计 | `ethtool -S`(`drv_/drvg_/gw_/gwg_`,46 项)+ `debugfs eth2can/{stats,clear_stats}` | 见 §6(部分为 Phase-2 计划) |
 
 ---
 
@@ -15,7 +32,7 @@
 | 需求 | 设计响应 |
 |---|---|
 | 利用 `enetc4_ecat_fast_xmit/recv` 收发以太网帧 | 在 `enetc_ecat` 模块内新增内核缓冲区变体 `_k`(同一 ring/BD 代码路径,~50 行补丁,见 §3),保持原用户态 fast socket 能力不受影响 |
-| 6 个 SocketCAN 节点(can0..can5),客户用标准工具链 | 新内核模块 `eth2can.ko`:6×`alloc_candev` + `register_candev`,支持 `ip link set canX type can bitrate ... dbitrate ... fd on`、candump/cansend/busmaster 零修改可用 |
+| 6 个 SocketCAN 节点(eth2can0..eth2can5),客户用标准工具链 | 新内核模块 `eth2can.ko`:6×`alloc_candev` + `register_candev`,支持 `ip link set eth2canX type can bitrate ... dbitrate ... fd on`、candump/cansend/busmaster 零修改可用 |
 | 最低延迟 | 全内核态数据面(无用户态 daemon);noqueue 直通 TX;专职 SCHED_FIFO 收发线程;批量注入;skb 预分配池;CPU 隔离部署 |
 | 接近线速 | 自适应聚合(协议 §6.1);每通道窗口流控防 MCU 溢出;预算见协议 §8 |
 
@@ -34,7 +51,7 @@
 ```
    用户态: candump/cansend/客户应用(AF_CAN raw socket,每通道独立)
  ──────────────────────────────────────────────────────────────────────
-   can0 … can5     6 × candev(IFF_ECHO | IFF_NO_QUEUE,echo_skb_max=WIN=16)
+   eth2can0…eth2can5  6 × candev(Phase-1:仅 IFF_ECHO;Phase-2 再加 IFF_NO_QUEUE;echo_skb_max=WIN=16)
      │ ndo_start_xmit(调用者进程上下文)            ▲ 批量 netif_receive_skb
      ▼                                             │(local_bh_disable 包裹)
  ┌──────────────────── eth2can.ko(隧道核心)─────────────────────────────┐
@@ -173,9 +190,11 @@ struct e2cf_core {
 };
 ```
 
+> **(Phase-2 结构)** 上面是 Phase-2 的聚合器/线程模型。**Phase-1 实际结构**(`eth2can.c`):6 路共享一个 `struct e2cf_dev`(gs_usb 风格 mux),**无** TX 聚合器、kthread、skb 池;TX 槽位用每通道 `echo_busy` 位图(`find_first_zero_bit` 取槽,wire `tag`=槽号)而非 `tx_head/inflight`,并存 `echo_ts[]/echo_t2[]` 时戳。
+
 ### 4.2 初始化(probe 流程)
 
-模块参数:`ifname=eth1`(enetc_ecat 绑定的接口)、`t_agg_ns=0`、`peer_mac=auto`。
+模块参数(**Phase-1 实际**,`eth2can.c`):`ifname`(下层网口,默认 **`eth0`**)、`vid`(默认 **`-1`** = 不打 VLAN tag 的 bring-up 默认;部署按协议置 `100`)、`peer`(默认空 = 从网关 HB 学习对端 MAC)。**无 `t_agg_ns`**(Phase-1 Linux→MCU 逐帧直发);Phase-2 才引入聚合定时参数。
 
 1. `dev_get_by_name(ifname)`,校验其 `netdev_ops` 含 `ndo_fast_xmit`(确认是 ecat 驱动);`dev_open()` 确保 fast path 解锁。
 2. 6 次 `alloc_candev(sizeof(struct e2cf_chan_priv), E2CF_WIN)`,填:
@@ -189,15 +208,18 @@ priv->can.fd.do_set_data_bittiming= e2cf_set_data_bittiming;
 priv->can.do_set_mode             = e2cf_set_mode;       /* CAN_MODE_START: bus-off 恢复 */
 priv->can.do_get_berr_counter     = e2cf_get_berr;       /* 回缓存的 EVT tec/rec */
 priv->can.ctrlmode_supported      = CAN_CTRLMODE_FD | CAN_CTRLMODE_LISTENONLY |
-                                    CAN_CTRLMODE_ONE_SHOT | CAN_CTRLMODE_BERR_REPORTING;
+                                    CAN_CTRLMODE_LOOPBACK;   /* v1:无 ONE_SHOT(固件 ENOTSUP)、无 BERR_REPORTING、无 FD_NON_ISO */
 ndev->netdev_ops   = &e2cf_netdev_ops;
-ndev->flags       |= IFF_ECHO;          /* 驱动负责回环,TX 完成语义正确 */
-ndev->priv_flags  |= IFF_NO_QUEUE;      /* noqueue:xmit 零排队直通,见 §4.3 */
+ndev->flags       |= IFF_ECHO;          /* 驱动负责回环,TX 完成语义正确(Phase-1 仅此一个 flag) */
+/* (Phase-2) ndev->priv_flags |= IFF_NO_QUEUE; noqueue 直通。
+   Phase-1 不设此 flag —— 走标准 qdisc,并在 xmit 中处理 NET_XMIT_CN 拥塞返回。 */
 ```
 
 3. `register_candev()` ×6;启动 tx/rx kthread(`sched_set_fifo`);启动 hb_work;发 GET_INFO 协商 `WIN`/时钟;skb 池预填。
 
 ### 4.3 TX 路径(用户 write → CAN 总线)
+
+> **(本节为 Phase-2 设计:noqueue + 聚合器 + flush 线程。)** **Phase-1 实际**(`e2cf_ndo_start_xmit`):每帧独立成 skb,`echo_id = find_first_zero_bit(&chan->echo_busy, E2CF_WIN_DEPTH)` 取窗口槽位(满则 `netif_stop_queue` 并**返回 `NETDEV_TX_BUSY`**);经 `can_dropped_invalid_skb()` 过滤后 `e2cf_build_skb()` + `dev_queue_xmit()` **逐帧直发**(无聚合、无 hrtimer);`can_put_echo_skb(skb, ndev, echo_id, 0)`(frame_len 传 0,长度在 TXC echo-return 时由 `can_get_echo_skb` 取回)。下面的聚合器/flush-线程伪码是 Phase-2。
 
 路径:`raw_sendmsg` → `can_send` → `dev_queue_xmit` → **noqueue 直通**(`net/core/dev.c:4746`,调用者上下文持 HARD_TX_LOCK 直接进 `ndo_start_xmit`,零 qdisc 排队;CAN 设备默认强制 pfifo_fast,`sch_generic.c:1176`,故必须 IFF_NO_QUEUE)。
 
@@ -258,12 +280,14 @@ while (!kthread_should_stop()) {
 
 ### 4.4 RX 路径(以太帧 → 用户 recv)
 
+> **(本节 RX kthread / 轮询退避为 Phase-2。)** **Phase-1 实际**:RX 走 `dev_add_pack(htons(E2CF_ETHERTYPE))` 注册的 `packet_type` 回调,在 **softirq** 上下文逐帧处理(无 kthread、无轮询退避、无 skb 池);DATA 记录每条直接 `alloc_canfd_skb()/alloc_can_skb()` 分配(失败计 `rx_dropped`)后 `netif_receive_skb`。代码中的以太类型宏是 `E2CF_ETHERTYPE`(=0x88B5),**不存在** `ETH_P_E2CF` 符号。下方 demux 各分支(DATA/TXC/EVT/CFG_RSP/TIME/HB)的处理逻辑两阶段一致。
+
 RX kthread 主循环(SCHED_FIFO 53,优先级高于 TX flush —— RX 还承担 TXC/流控释放职责):
 
 ```c
 while (!kthread_should_stop()) {
     len = enetc4_ecat_fast_recv_k(eth, core->rx_buf, sizeof(core->rx_buf),
-                                  htons(ETH_P_E2CF));
+                                  htons(E2CF_ETHERTYPE));
     if (len <= 0) {
         if (++idle > 64) usleep_range(20, 50);   /* 自适应退避:忙时全速轮询,
                                                      空闲时 ~30µs 周期,单核占用 <5% */
@@ -284,7 +308,7 @@ while (!kthread_should_stop()) {
 
 ### 4.5 配置通道(netlink 截获)
 
-`ip link set can2 type can bitrate 1000000 dbitrate 8000000 fd on` → `can_changelink`(RTNL 内,IFF_UP 时内核已拒绝)按 `bittiming_const` 算好 brp/tseg → 调驱动回调:
+`ip link set eth2can2 type can bitrate 1000000 dbitrate 8000000 fd on` → `can_changelink`(RTNL 内,IFF_UP 时内核已拒绝)按 `bittiming_const` 算好 brp/tseg → 调驱动回调:
 
 ```c
 static int e2cf_set_bittiming(struct net_device *ndev)
@@ -304,9 +328,11 @@ static int e2cf_set_bittiming(struct net_device *ndev)
    PCP=2)→ wait_for_completion_timeout(10ms) → 不匹配/超时重发,共 3 次 → -ETIMEDOUT */
 ```
 
-`ndo_open`(`e2cf_open`):`open_candev()` 校验 → 下发 SET_BITRATE(含 ctrlmode 映射:FD/listen-only/one-shot)→ START → `netif_start_queue`。`ndo_stop`:STOP → `close_candev()`。
+`ndo_open`(`e2cf_open`):`open_candev()` 校验 → 下发 SET_BITRATE(含 ctrlmode 映射:FD/listen-only/**loopback**;one-shot 固件 ENOTSUP,驱动不广告)→ START → `netif_start_queue`。`ndo_stop`:STOP → `close_candev()`。
 
 ### 4.6 锁与并发汇总
+
+> **(Phase-2 模型)** Phase-1 并发更简单:RX 在 softirq、TX 在调用者上下文;echo 槽位由每通道 `echo_busy` 位图管理(写在 xmit、清在 TXC softirq),CFG 由 `cfg_lock` 串行化,无 `agg_lock`/flush 线程/`fast_ndev_lock`。
 
 | 锁/机制 | 类型 | 保护对象 | 持有者 |
 |---|---|---|---|
@@ -316,16 +342,17 @@ static int e2cf_set_bittiming(struct net_device *ndev)
 | `cfg_lock` + completion | mutex | 配置请求-响应配对 | netlink 调用进程(RTNL 下) |
 | RTNL | 内核持有 | bittiming/mode | netlink 回调天然串行 |
 
-### 4.7 bittiming_const(占位,集成时按 MCXE31x RM 的 ENCBT/EDCBT 字段范围复核)
+### 4.7 bittiming_const(已按 `eth2can.c` 实测常量校准 —— FlexCAN ENCBT/EDCBT 字段宽度)
 
 ```c
+/* 实际值见 eth2can.c:e2cf_nom_bittiming_const / e2cf_dat_bittiming_const */
 static const struct can_bittiming_const e2cf_nom_btc = {
-    .name = "e2cf", .tseg1_min = 2, .tseg1_max = 256, .tseg2_min = 2, .tseg2_max = 128,
-    .sjw_max = 128, .brp_min = 1, .brp_max = 512, .brp_inc = 1,
+    .name = "e2cf", .tseg1_min = 2, .tseg1_max = 96, .tseg2_min = 2, .tseg2_max = 32,
+    .sjw_max = 32, .brp_min = 1, .brp_max = 1024, .brp_inc = 1,   /* CiA 区间;EPRS brp 10bit */
 };
 static const struct can_bittiming_const e2cf_dat_btc = {
     .name = "e2cf", .tseg1_min = 2, .tseg1_max = 32, .tseg2_min = 2, .tseg2_max = 16,
-    .sjw_max = 16, .brp_min = 1, .brp_max = 32, .brp_inc = 1,
+    .sjw_max = 16, .brp_min = 1, .brp_max = 255, .brp_inc = 1,    /* EDCBT 5/4bit;线上 dat_brp 为 u8 */
 };
 ```
 
@@ -350,16 +377,17 @@ static const struct can_bittiming_const e2cf_dat_btc = {
 ## 6. 统计与可观测性
 
 - 标准 netdev stats:rx/tx_packets/bytes/errors/dropped(语义见协议 §7)。
-- ethtool -S(自定义字符串集):`seq_lost`、`agg_n_histo[1,2-4,5-8,9-17]`、`txc_latency_us_histo`、`cfg_retries`、`pool_empty`、`fast_busy_retries`、`hb_timeouts`。
-- `ip -d -s link show canX`:state/berr-counter/restart-ms 原生可见。
-- tracepoints:`e2cf_tx_flush`(len,n)、`e2cf_rx_frame`(type,n,seq)便于 ftrace 延迟剖析。
+- `ethtool -S eth2canN`(**Phase-1 实际**字符串集,共 46 项):前缀 `drv_`/`drvg_` = 驱动通道/全局计数(如 `drvg_seq_lost`、`drvg_seq_gaps`、`drvg_cfg_retries`),前缀 `gw_`/`gwg_` = 网关 1 Hz STATS 推送(协议 §4.9)解出的通道/全局计数。
+- **debugfs**(Phase-1 已实现):`/sys/kernel/debug/eth2can/stats`(人类可读全量)、`/sys/kernel/debug/eth2can/clear_stats`(写 `all` 或 `0..5` → CFG op=9 CLEAR_STATS)。
+- `ip -d -s link show eth2canX`:state/berr-counter/restart-ms 原生可见。
+- tracepoints(`e2cf_tx_flush`/`e2cf_rx_frame`):**Phase-2 计划项,Phase-1 未实现**。
 
 ## 7. 测试计划(验收标准)
 
 | # | 测试 | 方法 | 通过标准 |
 |---|---|---|---|
-| T1 | 功能:6 节点配置 | `ip link set canX type can bitrate 1000000 dbitrate 8000000 fd on up` ×6 | 全部 UP,GET_INFO 协商成功 |
-| T2 | 回环延迟 | canX 发 → MCU 侧 CAN 线对接 canY → 收;用 `skb->tstamp`+硬件 GPIO 比对 | p99 单向附加延迟达协议 §8 预算 |
+| T1 | 功能:6 节点配置 | `ip link set eth2canX type can bitrate 1000000 dbitrate 8000000 fd on up` ×6 | 全部 UP,GET_INFO 协商成功 |
+| T2 | 回环延迟 | eth2canX 发 → MCU 侧 CAN 线对接 eth2canY → 收;用 `skb->tstamp`+硬件 GPIO 比对 | p99 单向附加延迟达协议 §8 预算 |
 | T3 | 满载吞吐 | 6 路双向 64B 满载(cangen 改造版,61 380 fps/向)持续 1 h | 零丢帧(seq_lost=0,rx_ovf=0),CPU(core5)<70% |
 | T4 | 小帧风暴 | 6 路 8B 145 900 fps 持续 10 min | 零丢帧,聚合直方图显示 n≥4 |
 | T5 | 流控 | 单通道灌 >10 230 fps | netif_stop/wake 正常,无 MCU 溢出 TXC status=4 |

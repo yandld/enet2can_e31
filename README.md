@@ -29,9 +29,9 @@ make            # 产出 build/e2cf_mcxe31.axf / .bin
 | `e2cf_config.h` | 全部编译期可调项(通道掩码、autostart、日志级别等) |
 | `dbg_log.[ch]` | **全局可控调试打印**:编译期级别裁剪 + 运行期级别/模块掩码;ISR 安全(格式化进 8KB 环形缓冲,主循环限额泄给 UART,数据面零阻塞) |
 | `gw_time.[ch]` | 网关单调时钟:DWT@160MHz 64 位扩展,ts_base 回绕连续 |
-| `eth_raw.[ch]` | 裸 ENET_QOS:零拷贝收(EMAC ISR prio2)/发(DTCM 面直接 DMA) |
+| `eth_raw.[ch]` | 裸 ENET_QOS:零拷贝收(EMAC ISR prio1,与 CAN 同级、无互抢)/发(DTCM 面直接 DMA) |
 | `can_hw.[ch]` | 6 路 FlexCAN:全部走 RX MB bank(CAN0/1/2=8RX MB、CAN3-5=4RX MB;IRMQ 接收队列,按 16 位时戳排序上送);每通道**单活跃 TX MB** 严格保序 + sw_txfifo[16](=协议窗口);stuck-TX 看门狗 |
-| `e2cf_core.[ch]` | 协议引擎:DATA/TXC 自适应聚合(T_agg=50µs、满 17/32 条或 egress 空闲即发)、CFG token 幂等执行、HB 500ms 链路监督→安全态、EVT/TIME 周期上报 |
+| `e2cf_core.[ch]` | 协议引擎:DATA/TXC 自适应聚合(满 17/32 条或 T_agg=50µs 死线到期即发;旧"egress 空闲即发"规则已删)、CFG token 幂等执行、HB 500ms 链路监督→安全态、EVT/TIME/STATS 周期上报 |
 | `main.c` | 超循环:聚合死线、错误轮询 10ms、链路 100ms、日志/统计 |
 
 ## 调试打印(设计要求:全局开关)
@@ -39,7 +39,7 @@ make            # 产出 build/e2cf_mcxe31.axf / .bin
 - 编译期:`E2CF_LOG_BUILD_LEVEL`(高于此级别的语句整体剔除)
 - 运行期:UART 单键控制台 —— `0..5` 设级别(NONE..TRACE)、`m` 轮换模块掩码、
   `s` 立即打印全部统计、`?` 帮助;也可代码调 `dbg_log_set_level/mask()`
-- 周期统计:`E2CF_STATS_PERIOD_MS`(默认 3s,0 关闭)
+- 周期统计:`E2CF_STATS_PERIOD_MS`(默认 **0/关闭**;统计改走带内 STATS 1Hz,见下方偏差表。设如 3000 可在单板台架开 UART 周期打印)
 - 所有 LOG 调用 ISR 安全,绝不阻塞数据面;环满丢行计数可见
 
 ## 上电自检(bring-up 默认)
@@ -65,7 +65,7 @@ make            # 产出 build/e2cf_mcxe31.axf / .bin
 
 ## 内存布局
 
-- DTCM 非 cache 区(16KB):EQOS 描述符环 + 6×1536B TX 聚合面(零拷贝、免维护,占 9.25KB)
+- DTCM 非 cache 区(16KB):EQOS 描述符环 + 8×1536B TX 聚合面(零拷贝、免维护;面 12KB,整个 ncache 区 = 8×1536+1024+128 = 13440B)
 - SRAM(cache):EMAC RX 缓冲池(驱动做 invalidate 维护)
 - 镜像:Code 46.6KB / ZI 67KB(512KB RAM 余量充足)
 
