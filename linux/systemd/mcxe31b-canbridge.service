@@ -1,5 +1,5 @@
 [Unit]
-Description=MCXE31B UDP<->SocketCAN bridge (can0..can5)
+Description=MCXE31B UDP<->SocketCAN bridge (virtual CAN, configurable IFACES)
 After=network-online.target
 Wants=network-online.target
 

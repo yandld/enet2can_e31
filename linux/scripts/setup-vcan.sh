@@ -1,10 +1,10 @@
 #!/bin/sh
-# setup-vcan.sh - create + bring up vcan interfaces named can0..canN at CAN-FD MTU.
+# setup-vcan.sh - create + bring up vcan interfaces (default vcan-gw0..5) at CAN-FD MTU.
 # Idempotent. Needs root. CANFD_MTU is 72; without it FD frames are silently dropped.
 set -eu
 
 MTU=72
-IFACES="${*:-can0 can1 can2 can3 can4 can5}"
+IFACES="${*:-vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5}"
 
 if ! ip link show type vcan >/dev/null 2>&1 && ! lsmod 2>/dev/null | grep -q '^vcan'; then
     if ! modprobe vcan 2>/dev/null; then

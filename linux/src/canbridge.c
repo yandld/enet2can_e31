@@ -6,8 +6,8 @@
  *
  * The board multiplexes all six CAN channels onto ONE UDP stream (port 50000),
  * tagging each frame with a per-frame channel byte. This daemon demuxes that one
- * stream into six SocketCAN interfaces (created as vcan and named can0..can5):
- *   - downlink UDP -> can[channel]   (board RX frames appear on candump can0..can5)
+ * stream into six SocketCAN interfaces (created as vcan, default vcan-gw0..vcan-gw5):
+ *   - downlink UDP -> iface[channel]  (board RX frames appear on candump vcan-gw0..5)
  *   - uplink   can -> UDP            (cangen/app frames are forwarded to the board)
  *
  * Single epoll thread, libc only, no kernel module. Built on the target with
@@ -539,14 +539,14 @@ static void dump_stats(const char *tag)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "usage: %s --board <ipv4> [options] [can0 can1 ...]\n"
+            "usage: %s --board <ipv4> [options] [vcan-gw0 vcan-gw1 ...]\n"
             "  --board <ipv4>        board IP (required)\n"
             "  --data-port <n>       board UDP data port (default %u)\n"
             "  --local-port <n>      local UDP bind port (default %u)\n"
             "  --keepalive-ms <n>    idle session keepalive (default 200)\n"
             "  --stats-ms <n>        journald stats interval, 0=off (default 1000)\n"
             "  --rcvbuf <bytes>      SO_RCVBUF (default 4194304)\n"
-            "  interfaces default to can0..can5; each maps to channel 0..5\n",
+            "  interfaces default to vcan-gw0..vcan-gw5; each maps to channel 0..5\n",
             prog, CAN_GATEWAY_UDP_DATA_PORT, CAN_GATEWAY_UDP_DATA_PORT);
 }
 
@@ -589,7 +589,7 @@ int main(int argc, char **argv)
     for (int i = optind; i < argc && g_cfg.n < (int)MAX_CH; i++)
         g_cfg.ifaces[g_cfg.n++] = argv[i];
     if (g_cfg.n == 0) {
-        static const char *def[MAX_CH] = {"can0", "can1", "can2", "can3", "can4", "can5"};
+        static const char *def[MAX_CH] = {"vcan-gw0", "vcan-gw1", "vcan-gw2", "vcan-gw3", "vcan-gw4", "vcan-gw5"};
         for (int i = 0; i < (int)MAX_CH; i++) g_cfg.ifaces[i] = def[i];
         g_cfg.n = MAX_CH;
     }
@@ -637,7 +637,7 @@ int main(int argc, char **argv)
 #undef ADD
 
     send_keepalive(); /* register the session with the board */
-    fprintf(stderr, "mcxe31b-canbridge: board=%s:%u ifaces=%d, can0..can%d ready\n",
+    fprintf(stderr, "mcxe31b-canbridge: board=%s:%u, %d ifaces ready (channels 0..%d)\n",
             board_ip, data_port, g_cfg.n, g_cfg.n - 1);
 
     int ka_acc = 0, st_acc = 0, start = 0;

@@ -16,14 +16,14 @@
 #
 # Interval and count are positional on purpose: 'INTERVAL=.. sudo ...' does NOT work
 # because sudo drops the caller's env. Override other knobs after sudo, e.g.
-# 'sudo IFACES="can0 can1" ./latency.sh <ip>'.
+# 'sudo IFACES="vcan-gw0 vcan-gw1" ./latency.sh <ip>'.
 #   env knobs: IFACES LEN BITRATE DBITRATE DEBUG
 set -u
 
 BOARD_IP="${1:-${BOARD_IP:-192.168.8.113}}"
 INTERVAL="${2:-${INTERVAL:-1}}"   # seconds between pings (2nd arg); lower = faster ping
 COUNT="${3:-${COUNT:-0}}"         # number of pings, 0 = until Ctrl-C (3rd arg)
-IFACES="${IFACES:-can0 can1 can2 can3 can4 can5}" # channels to loopback-ping (canX = channel X)
+IFACES="${IFACES:-vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5}" # channels to loopback-ping (vcan-gwX = channel X)
 LEN="${LEN:-64}"                  # FD payload bytes
 BITRATE="${BITRATE:-1000000}"
 DBITRATE="${DBITRATE:-5000000}"
@@ -39,7 +39,7 @@ echo "   on-chip CAN loopback, no wiring: each line is the REAL per-channel roun
 
 # enable FD + on-chip loopback on every channel, then zero the counters for this run
 for f in $IFACES; do
-    ch=${f#can}
+    ch=${f##*[!0-9]}   # channel = trailing number in the name (vcan-gw3 -> 3)
     "$CTL" --board "$BOARD_IP" set_can_config channel="$ch" enabled=true fd=true \
         bitrate="$BITRATE" data_bitrate="$DBITRATE" brs=true loopback=true >/dev/null 2>&1 \
         || echo "WARN: set_can_config ch$ch failed (board $BOARD_IP reachable?)"
@@ -51,7 +51,7 @@ done
 # them on the real bus. Runs on any exit (including Ctrl-C).
 restore_loopback() {
     for f in $IFACES; do
-        "$CTL" --board "$BOARD_IP" set_can_config channel="${f#can}" loopback=false >/dev/null 2>&1
+        "$CTL" --board "$BOARD_IP" set_can_config channel="${f##*[!0-9]}" loopback=false >/dev/null 2>&1
     done
     echo "loopback disabled - board back to normal bus forwarding."
 }

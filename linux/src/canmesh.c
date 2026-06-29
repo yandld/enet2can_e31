@@ -11,12 +11,12 @@
  * Prints ONE self-contained result line per run (so several pairs writing to the
  * same terminal stay readable) and exits 0=PASS, 2=FAIL, 3=TOOL-LIMITED.
  *
- * Topology: can0..canN all bridged to the board, board's N CAN channels on ONE bus.
+ * Topology: vcan-gw0..N all bridged to the board, board's N CAN channels on ONE bus.
  * A frame sent on can_i appears on every other can_j. Each socket is TX+RX with
  * CAN_RAW_RECV_OWN_MSGS=0, so it never sees its own sends (the local vcan echo) -
  * only the board's cross-bus copies. Each sent frame is expected exactly N-1 times.
  *
- *   canmesh --ifaces can0 can1 can2 can3 can4 can5 --rate 8000 --duration 10 --len 16
+ *   canmesh --ifaces vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5 --rate 8000 --duration 10 --len 16
  *
  * SO_RXQ_OVFL still self-witnesses: tool_rx_overflow>0 means the tool dropped (lower
  * --rate); loss with tool_rx_overflow==0 is real product loss.
@@ -24,7 +24,7 @@
  * --ping is a second, ping-style mode on a single pair: send ONE frame, wait for the
  * board to return it, print that round-trip, repeat after --interval (Ctrl-C to stop).
  * One frame in flight at a time, so the RTT it prints is real latency, never queueing.
- *   canmesh can0 can1 --ping --interval 1
+ *   canmesh vcan-gw0 vcan-gw1 --ping --interval 1
  *
  * --loopback drops the bus wiring entirely: the board puts each FlexCAN in internal
  * loopback (self-reception), so a frame sent on can_i returns on can_i. Each iface then
@@ -32,7 +32,7 @@
  * frame is expected exactly ONCE (on its own channel); in --ping mode every iface is
  * pinged at once (the 6-channels-simultaneously latency test). Enable board loopback via
  * canbridge_ctl set_can_config loopback=true first (the latency.sh/stress.sh scripts do).
- *   canmesh can0 can1 can2 can3 can4 can5 --ping --loopback
+ *   canmesh vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5 --ping --loopback
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -463,17 +463,17 @@ int main(int argc, char **argv)
         case 'h':
         default:
             fprintf(stderr,
-                    "usage: %s [--ifaces] can0 can1 ... [--rate fps] [--duration s]\n"
+                    "usage: %s [--ifaces] vcan-gw0 vcan-gw1 ... [--rate fps] [--duration s]\n"
                     "       [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N] [--loopback]\n"
-                    "  ping (wired pair): %s can0 can1 --ping [--interval s] [--count N]\n"
-                    "  ping (loopback)  : %s can0..can5 --ping --loopback   (each channel self-loops)\n",
+                    "  ping (wired pair): %s vcan-gw0 vcan-gw1 --ping [--interval s] [--count N]\n"
+                    "  ping (loopback)  : %s vcan-gw0..vcan-gw5 --ping --loopback   (each channel self-loops)\n",
                     argv[0], argv[0], argv[0]);
             return c == 'h' ? 0 : 1;
         }
     }
     for (int i = optind; i < argc && n < MAX_CH; i++) ifaces[n++] = argv[i];
     if (n == 0) {
-        static const char *def[MAX_CH] = {"can0", "can1", "can2", "can3", "can4", "can5"};
+        static const char *def[MAX_CH] = {"vcan-gw0", "vcan-gw1", "vcan-gw2", "vcan-gw3", "vcan-gw4", "vcan-gw5"};
         for (int i = 0; i < MAX_CH; i++) ifaces[i] = def[i];
         n = MAX_CH;
     }

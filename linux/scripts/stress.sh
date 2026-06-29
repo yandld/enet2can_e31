@@ -20,7 +20,7 @@
 #
 # Rate and duration are positional on purpose: 'RATE=2000 sudo ...' does NOT work because
 # sudo drops the caller's env vars. To override other knobs, put them after sudo, e.g.
-# 'sudo IFACES="can0 can1" ./stress.sh <ip>'.
+# 'sudo IFACES="vcan-gw0 vcan-gw1" ./stress.sh <ip>'.
 # This is the LOSS/THROUGHPUT test. It does NOT report a latency max on purpose: under a
 # 6xRATE flood that "max" is queueing, not forwarding latency. For the real latency, run
 # latency.sh (ping-style). DEBUG=1 re-enables the detailed board-internal latency breakdown
@@ -30,7 +30,7 @@ set -u
 
 BOARD_IP="${1:-${BOARD_IP:-192.168.8.113}}"
 RATE="${2:-${RATE:-1000}}"    # frames/sec per channel each way; 2nd arg overrides
-IFACES="${IFACES:-can0 can1 can2 can3 can4 can5}" # channels to loopback (canX = channel X)
+IFACES="${IFACES:-vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5}" # channels to loopback (vcan-gwX = channel X)
 LEN="${LEN:-64}"              # FD payload bytes
 DURATION="${3:-${DURATION:-10}}"  # seconds; 3rd arg overrides
 BITRATE="${BITRATE:-1000000}"
@@ -49,7 +49,7 @@ echo "   on-chip CAN loopback, no wiring: each channel sends and self-receives i
 
 # enable FD + on-chip loopback on every channel, then zero the counters
 for f in $IFACES; do
-    ch=${f#can}
+    ch=${f##*[!0-9]}   # channel = trailing number in the name (vcan-gw3 -> 3)
     "$CTL" --board "$BOARD_IP" set_can_config channel="$ch" enabled=true fd=true \
         bitrate="$BITRATE" data_bitrate="$DBITRATE" brs=true loopback=true >/dev/null 2>&1 \
         || echo "WARN: set_can_config ch$ch failed (board $BOARD_IP reachable?)"
@@ -59,7 +59,7 @@ done
 # Restore normal (non-loopback) bus forwarding when we are done; loopback is a test mode.
 restore_loopback() {
     for f in $IFACES; do
-        "$CTL" --board "$BOARD_IP" set_can_config channel="${f#can}" loopback=false >/dev/null 2>&1
+        "$CTL" --board "$BOARD_IP" set_can_config channel="${f##*[!0-9]}" loopback=false >/dev/null 2>&1
     done
 }
 # Arm restore right after loopback was enabled, so ANY exit turns it back off. INT/TERM

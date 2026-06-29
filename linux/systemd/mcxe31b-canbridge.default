@@ -1,10 +1,18 @@
 # /etc/default/mcxe31b-canbridge - configuration for the mcxe31b-canbridge service.
 
-# Board (MCXE31B gateway) IPv4 address. REQUIRED - edit this.
-BOARD_IP=192.168.1.50
+# Board (MCXE31B gateway) IPv4 address. Defaults to the firmware static-fallback
+# address; if the board got a DHCP lease instead, set its real IP (or pass it as
+# install.sh <BOARD_IP>, which rewrites this line).
+BOARD_IP=192.168.8.113
 
-# SocketCAN interfaces to create/bridge, in channel order 0..5.
-IFACES="can0 can1 can2 can3 can4 can5"
+# SocketCAN interfaces to create/bridge. Two rules you must not break:
+#   - order = channel: position N maps to firmware CAN channel N.
+#   - no reduction: the board always sends 6 channels; a shorter list silently
+#     drops the missing ones.
+# These are virtual (vcan) names, NOT physical CAN. They deliberately avoid the
+# default can0/can1 so they never collide with a customer's existing physical CAN.
+# Use install.sh --prefix NAME to pick different names.
+IFACES="vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5"
 
 # Idle session keepalive in milliseconds (board unicasts RX to the last peer).
 KEEPALIVE_MS=200

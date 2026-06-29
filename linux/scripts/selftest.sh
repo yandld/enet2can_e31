@@ -33,9 +33,9 @@ zcat /proc/config.gz 2>/dev/null | grep -E 'CONFIG_CAN(_VCAN|_RAW|_DEV)?=' \
     || echo "(no /proc/config.gz; checking modules) $(ls /lib/modules/$(uname -r)/kernel/drivers/net/can/vcan.ko* 2>/dev/null || echo 'vcan.ko not found')"
 command -v candump >/dev/null 2>&1 || echo "WARNING: can-utils not installed (apt-get install can-utils)"
 
-sep "3. BRING UP vcan can0..can5 @ mtu 72"
+sep "3. BRING UP vcan vcan-gw0..vcan-gw5 @ mtu 72"
 ./scripts/setup-vcan.sh
-ip -d link show can0 | sed -n '1,3p'
+ip -d link show vcan-gw0 | sed -n '1,3p'
 
 sep "4. BOARD REACHABLE?"
 if ping -c2 -W1 "$BOARD" >/dev/null 2>&1; then echo "ping $BOARD OK"; else echo "ping $BOARD FAIL (check cable/IP)"; fi
@@ -43,7 +43,7 @@ echo "get_status (first 500 bytes):"
 ./canbridge_ctl --board "$BOARD" --timeout-ms 1500 get_status | head -c 500; echo
 
 sep "5. START BRIDGE (background)"
-./canbridge --board "$BOARD" --stats-ms 1000 can0 can1 can2 can3 can4 can5 >/tmp/canbridge.log 2>&1 &
+./canbridge --board "$BOARD" --stats-ms 1000 vcan-gw0 vcan-gw1 vcan-gw2 vcan-gw3 vcan-gw4 vcan-gw5 >/tmp/canbridge.log 2>&1 &
 CB=$!
 sleep 1
 if ! kill -0 "$CB" 2>/dev/null; then
@@ -53,12 +53,12 @@ if ! kill -0 "$CB" 2>/dev/null; then
 fi
 echo "bridge pid=$CB up; startup self-checks passed (vcan/mtu72/FD_FRAMES OK)"
 
-sep "6. HOST->CAN round trip (cangen can0 -> board)"
+sep "6. HOST->CAN round trip (cangen vcan-gw0 -> board)"
 ./canbridge_ctl --board "$BOARD" reset_stats >/dev/null 2>&1
 if command -v cangen >/dev/null 2>&1; then
-    cangen can0 -g 5 -n 200 -L 8 2>/dev/null
+    cangen vcan-gw0 -g 5 -n 200 -L 8 2>/dev/null
     sleep 1
-    echo "board counters after 200x cangen can0 (expect tunnel.rx_frames ~200):"
+    echo "board counters after 200x cangen vcan-gw0 (expect tunnel.rx_frames ~200):"
     ./canbridge_ctl --board "$BOARD" get_status | tr ',{' '\n\n' \
         | grep -E '"(rx_frames|tx_frames|loss|parse_error|queue_full|drop|rx|tx_done|rx_fifo_overflow)"' | head -24
 else
