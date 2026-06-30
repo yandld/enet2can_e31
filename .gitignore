@@ -6,6 +6,8 @@ build/
 *.map
 *.htm
 
+debug
+
 # Linux 内核模块构建产物(可部署的 eth2can.ko 例外,随仓库发布)
 linux/*.ko
 !linux/eth2can.ko
