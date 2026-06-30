@@ -25,7 +25,7 @@
 # 6xRATE flood that "max" is queueing, not forwarding latency. For the real latency, run
 # latency.sh (ping-style). DEBUG=1 re-enables the detailed board-internal latency breakdown
 # for tuning (hidden from customers).
-#   env knobs: RATE LEN DURATION BITRATE DBITRATE IFACES DEBUG
+#   env knobs: RATE LEN DURATION BITRATE DBITRATE IFACES DEBUG BURST
 set -u
 
 BOARD_IP="${1:-${BOARD_IP:-192.168.8.113}}"
@@ -36,6 +36,8 @@ DURATION="${3:-${DURATION:-10}}"  # seconds; 3rd arg overrides
 BITRATE="${BITRATE:-1000000}"
 DBITRATE="${DBITRATE:-5000000}"
 DEBUG="${DEBUG:-0}"          # 1 = show detailed board-internal latency debug (hidden from customers)
+BURST="${BURST:-1}"          # mesh frames sent back-to-back before pacing; >1 lets the bridge
+                             # coalesce multi-frame datagrams (emulate real bursty CAN traffic)
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CTL="${CTL:-$(command -v canbridge_ctl 2>/dev/null || echo "$HERE/../canbridge_ctl")}"
@@ -75,7 +77,7 @@ trap 'exit 130' INT TERM
 # self-receive - the load is full FD+BRS. Capture to a tmp file to replay + parse the latency.
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"; restore_loopback' EXIT
-"$MESH" $IFACES --rate "$((RATE*NCH))" --duration "$DURATION" --len "$LEN" --loopback >"$TMPD/run.out" 2>&1
+"$MESH" $IFACES --rate "$((RATE*NCH))" --duration "$DURATION" --len "$LEN" --burst "$BURST" --loopback >"$TMPD/run.out" 2>&1
 rc=$?
 
 # Per-bus line: in a normal (customer) run, hide the latency figures -- under this flood
@@ -89,6 +91,14 @@ fi
 
 # Board counters snapshot (zeroed before the run). Reused by the failure branch below.
 status=$("$CTL" --board "$BOARD_IP" get_status 2>/dev/null)
+
+# Downlink batching: CAN frames the board received per UDP datagram (tunnel rx_frames /
+# rx_packets). ~1 = every frame is its own packet (worst case); higher = the bridge
+# coalesced bursts, so the board sees fewer packets at the same fps (raise BURST to test).
+printf '%s' "$status" | awk '
+function num(s, k,   r) { if (match(s, "\"" k "\":[0-9]+")) { r = substr(s, RSTART, RLENGTH); sub("\"" k "\":", "", r); return r + 0 } return 0 }
+{ rp = num($0, "rx_packets"); rf = num($0, "rx_frames");
+  if (rp > 0) printf "board downlink: %d frames / %d packets = %.2f frames/pkt\n", rf, rp, rf / rp }'
 
 if [ "$DEBUG" = 1 ]; then
     # Detailed debug (hidden from customers): board DWT latency, the board-vs-network split,

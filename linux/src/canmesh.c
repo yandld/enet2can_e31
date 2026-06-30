@@ -437,6 +437,8 @@ int main(int argc, char **argv)
     int loopback = 0;         /* board-loopback mode: each channel self-loops, no wiring */
     long ping_count = 0;      /* 0 = until Ctrl-C */
     double ping_interval = 1.0;
+    long burst = 1;           /* mesh: frames sent back-to-back before pacing; >1 clusters
+                               * them so the bridge coalesces multi-frame v3 datagrams */
 
     static const struct option o[] = {
         {"rate", required_argument, 0, 'r'}, {"duration", required_argument, 0, 'd'},
@@ -445,9 +447,10 @@ int main(int argc, char **argv)
         {"ifaces", no_argument, 0, 'i'}, {"ping", no_argument, 0, 'p'},
         {"loopback", no_argument, 0, 'L'},
         {"count", required_argument, 0, 'c'}, {"interval", required_argument, 0, 'I'},
+        {"burst", required_argument, 0, 'k'},
         {"help", no_argument, 0, 'h'}, {0, 0, 0, 0}};
     int c;
-    while ((c = getopt_long(argc, argv, "r:d:l:b:Bs:ipLc:I:h", o, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "r:d:l:b:Bs:ipLc:I:k:h", o, NULL)) != -1) {
         switch (c) {
         case 'r': rate = atof(optarg); break;
         case 'd': duration = atof(optarg); break;
@@ -460,11 +463,12 @@ int main(int argc, char **argv)
         case 'L': loopback = 1; break;
         case 'c': ping_count = atol(optarg); break;
         case 'I': ping_interval = atof(optarg); break;
+        case 'k': burst = atol(optarg); if (burst < 1) burst = 1; break;
         case 'h':
         default:
             fprintf(stderr,
                     "usage: %s [--ifaces] vcan-gw0 vcan-gw1 ... [--rate fps] [--duration s]\n"
-                    "       [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N] [--loopback]\n"
+                    "       [--len 15..64] [--base-id 0x100] [--no-brs] [--seed N] [--loopback] [--burst N]\n"
                     "  ping (wired pair): %s vcan-gw0 vcan-gw1 --ping [--interval s] [--count N]\n"
                     "  ping (loopback)  : %s vcan-gw0..vcan-gw5 --ping --loopback   (each channel self-loops)\n",
                     argv[0], argv[0], argv[0]);
@@ -515,8 +519,12 @@ int main(int argc, char **argv)
         struct mesh_hdr h = {MAGIC, (uint32_t)i, (uint8_t)ch, now_ns()};
         memcpy(f.data, &h, HDR_SZ);
         if (write(g_sock[ch], &f, CANFD_SZ) == CANFD_SZ) sent_ch[ch]++;
-        if (period_ns) {
-            next.tv_nsec += (long)period_ns;
+        /* Pace once per 'burst' frames: send burst frames back-to-back, then sleep burst
+         * periods (same average rate). burst>1 makes frames pile in the vcan socket so the
+         * bridge packs them into multi-frame v3 datagrams - fewer UDP packets/s to the board
+         * at the same fps, which is what real bursty CAN traffic looks like. */
+        if (period_ns && (i + 1) % (uint64_t)burst == 0) {
+            next.tv_nsec += (long)(period_ns * (uint64_t)burst);
             while (next.tv_nsec >= 1000000000L) { next.tv_nsec -= 1000000000L; next.tv_sec++; }
             clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
         }
