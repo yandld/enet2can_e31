@@ -49,8 +49,9 @@ function 能力会继续加进这同一个文件。
 ## 编译与使用
 
 ```sh
-make            # x86 主机=交叉+静态(拷板直接用); 板上=本地 gcc
-make host       # x86 ASan 编译检查
+make            # 当前 Linux 平台本地编译(树莓派/Ubuntu/工控机等)
+make cross      # 显式 aarch64 静态交叉编译; 可传 TOOLCHAIN_DIR=/opt/...
+make host       # ASan 编译检查
 
 # 板上(需 root, 驱动已加载):
 ./canperf                   # 自动配 1M/8M FD, 依次测 0->4, 1->2, 3->5

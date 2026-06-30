@@ -10,11 +10,11 @@ ETHIF="${1:-eth0}"
 cd "$(dirname "$0")"
 
 echo ">>> kernel: $(uname -r)"
-# .ko lookup, relative to this script: same dir (bundle / manual copy
-# layout) or one level up (repo layout: linux/scripts/ -> linux/eth2can.ko)
+# .ko lookup, relative to this script: same dir for bundle/manual copy, or
+# ../../linux/eth2can.ko for the repository layout.
 KO=./eth2can.ko
-[ -f "$KO" ] || KO=../eth2can.ko
-[ -f "$KO" ] || { echo "ERROR: eth2can.ko not found in $(pwd) or $(pwd)/.."; exit 1; }
+[ -f "$KO" ] || KO=../../linux/eth2can.ko
+[ -f "$KO" ] || { echo "ERROR: eth2can.ko not found in $(pwd) or ../../linux"; exit 1; }
 echo ">>> module: $KO"
 
 # Old and new kernels share the same release string (same source tree), so

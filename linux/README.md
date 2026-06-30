@@ -40,55 +40,28 @@ TX 聚合,协议逻辑(本文件的窗口/TXC/EVT/CFG 部分)原样保留。
 - 兼容 5.15(本机编译验证)与 6.9+(`can.fd.data_bittiming` 布局,
   已用版本宏隔离;RTE 6.18 内核交叉编译见下)。
 
-## scripts/ 目录说明(每个脚本干什么、在哪跑、什么时候需要)
+## Customer-facing scripts
 
-| 脚本 | 在哪跑 | 作用 | 什么时候需要 |
-|---|---|---|---|
-| `env.sh` | 主机(被 source) | 集中所有路径/工具链/板子变量(KSRC、KOUT、TOOLCHAIN_DIR、BOARD_IP...),全部可环境变量覆盖 | 不直接执行;其余主机脚本的公共配置 |
-| `build_driver.sh` | 主机 | 交叉编译 `eth2can.ko`(产物落在 `linux/`,已入库);`host` 参数 = 对宿主 5.15 内核编译做 API/语法检查 | **每次改驱动源码后**(记得连同新 .ko 一起提交) |
-| `build_kernel.sh` | 主机 | RTE 6.18 内核:`prepare`(defconfig+CAN 全 built-in+modules_prepare)/ 完整构建 / `menuconfig` | 首次搭环境、改内核配置、升内核 |
-| `board_setup.sh` | **板上** | **日常唯一入口**:找 .ko(脚本同目录或 `../`,兼容仓库布局)→ vermagic 校验 → insmod → 等第一个网关 HB(peer 锁定)→ 6 通道 1M/8M FD 拉起 | 每次加载/重载驱动 |
-| `install_kernel.sh` | 板上 | 从 bundle 解压目录把 Image(+dtb)装进 U-Boot 实际引导的 boot 分区(自动定位 `<bootdisk>p1`,首次自动留 `.orig` 备份可回滚) | 只在**更新内核**时 |
-| `make_bundle.sh` | 主机 | 打包 Image+ko+脚本为一个 tgz(`full` 加 dtbs+modules) | 可选:给没有 git/网络的板子做 U 盘部署包;板子能 git clone 时**用不到** |
-| `deploy.sh` | 主机 | scp 推 ko/Image 到板 + 远程执行(sshpass) | 可选:手动 scp/git 部署时**用不到** |
+`linux/scripts/` is intentionally small. For customer source delivery it should
+contain only:
 
-> 现在板上直接 `git clone` 仓库即可:`sh linux/scripts/board_setup.sh eth1`
-> 会自动在 `../eth2can.ko` 找到入库的模块。`deploy.sh`/`make_bundle.sh`
-> 仅作为备用通道保留。
+| Script | Purpose |
+|---|---|
+| `install_driver.sh` | Build `eth2can.ko` for the running kernel, load it for the current boot, and optionally configure `eth2can0..5`. |
 
-## 构建(主机)
+The i.MX95/RTE kernel build, deploy, bundle, and boot-partition maintenance
+scripts are platform-specific internal tools and live under `tools/imx95/`.
+They are not required for normal customer installation.
 
-所有路径/工具链集中在 `scripts/env.sh`(KSRC=本仓库 real-time-edge-linux 6.18,
-KOUT=KSRC/build_imx95 独立输出目录,工具链 /opt/arm-gnu-toolchain-14.3 aarch64,
-板子 IP/用户/目录均可环境变量覆盖):
+Manual driver commands are still useful for debugging:
 
 ```sh
-cd linux/scripts
-
-./build_kernel.sh prepare      # 首次:imx_v8_defconfig + CAN 全家 built-in(=y,只有
-                               # eth2can.ko 本身是模块)+ modules_prepare,几分钟
-./build_driver.sh              # 交叉编译 eth2can.ko(arm64;内核未 prepare 会自动先 prepare)
-./build_kernel.sh              # 完整内核:Image + dtbs + modules(64 核 ~10 分钟)
-./build_kernel.sh menuconfig   # 改内核配置
-./build_driver.sh host         # 对宿主内核编译,快速 API/语法检查
-
-BOARD_IP=192.168.x.x ./deploy.sh drv eth1   # scp .ko → rmmod/insmod → 6 通道配 1M/8M 拉起
-BOARD_IP=192.168.x.x ./deploy.sh kernel     # scp Image+imx95 dtb 到板上 boot 分区
-```
-
-注:仅 `prepare` 时无 Module.symvers,build_driver.sh 自动降级
-`KBUILD_MODPOST_WARN=1`(.ko 照常可 insmod);跑过一次完整内核构建后即走正规 modpost。
-
-手工方式仍可用:`make KDIR=... ARCH=arm64 CROSS_COMPILE=...`(见 Makefile)。
-
-```sh
-insmod eth2can.ko ifname=eth0            # vid=100 启用 802.1Q;peer=xx:.. 静态对端
-ip link set eth2can0 type can bitrate 1000000 dbitrate 8000000 fd on
+insmod eth2can.ko ifname=eth0            # vid=100 enables 802.1Q; peer=xx:.. pins peer MAC
+ip link set eth2can0 type can bitrate 1000000 dbitrate 5000000 fd on
 ip link set eth2can0 up
 candump eth2can0 &
 cansend eth2can0 123##300DEADBEEF
 ```
-
 模块参数:`ifname`(下层网口,默认 eth0)、`vid`(-1=不打 VLAN tag,
 bring-up 默认;部署按协议置 100)、`peer`(默认从网关 HB 学习对端 MAC)。
 
@@ -98,3 +71,94 @@ bring-up 默认;部署按协议置 100)、`peer`(默认从网关 HB 学习对端
 2. insmod 后 `ip -d link show eth2can0`:HB 学到对端 → carrier on
 3. `cansend` → MCU 串口看 dn/TXC 计数;loopback 模式下 candump 应回环收到
 4. 关 loopback、接 TJA1463 扩展板,真总线对打(测试计划 M1/M2/T1-T9)
+
+## Portable one-shot install on common Linux targets
+
+For bring-up on Raspberry Pi, RK, i.MX vendor Linux, and PC Ubuntu/Debian,
+use the portable installer from the repository root:
+
+```sh
+sh linux/scripts/install_driver.sh
+sh linux/scripts/install_driver.sh --ifname eth1 --vid 100
+sh linux/scripts/install_driver.sh --dry-run --ifname eth0
+```
+
+The installer builds `eth2can.ko` against the running kernel, loads it for the
+current boot, brings the Ethernet interface up, and configures `eth2can0..5`
+as CAN FD channels at 1M/8M by default. It does not install DKMS, write systemd
+units, or make the module persistent across reboot. The build/load step does
+not require the MCXE31B gateway to be connected. If no gateway heartbeat is
+observed, the script leaves the module loaded and skips SocketCAN channel
+configuration because `ip link set eth2canN ... up` would only time out.
+
+Normally no kernel rebuild is needed. The target kernel must already provide
+SocketCAN support:
+
+- `CONFIG_CAN=y/m`
+- `CONFIG_CAN_RAW=y/m`
+- `CONFIG_CAN_DEV=y/m`
+
+The target also needs a kernel build tree matching `uname -r`, normally at
+`/lib/modules/$(uname -r)/build`. If a vendor BSP does not expose that path,
+point the script to the prepared kernel tree:
+
+```sh
+KDIR=/path/to/kernel/build sh linux/scripts/install_driver.sh --ifname eth0
+```
+
+Platform notes:
+
+- Ubuntu/Debian/PC: the script can install `make`, `gcc`, `kmod`, `iproute2`,
+  `can-utils`, and `linux-headers-$(uname -r)` when a package manager is
+  available.
+- Raspberry Pi OS: if standard headers are missing, use
+  `raspberrypi-kernel-headers`. Some Raspberry Pi releases install headers
+  under `/usr/src/linux-headers-$(uname -r)` without creating
+  `/lib/modules/$(uname -r)/build`; the installer auto-detects that path.
+  The header directory must still match `uname -r` exactly. For example,
+  a running `6.1.21-v8+` kernel cannot use `linux-headers-6.1.21-v7l+`.
+  If only `6.1.21+`, `6.1.21-v7+`, and `6.1.21-v7l+` exist, boot a matching
+  32-bit kernel variant or install/provide the exact `-v8+` kernel build tree.
+- RK/i.MX vendor Debian: many BSP kernels require the vendor kernel source or
+  an SDK-prepared build directory; use `KDIR=...` when headers are not packaged.
+- Fedora/RHEL/Rocky, Arch, and openSUSE are handled on a best-effort basis via
+  their standard kernel header/devel packages.
+
+Useful options:
+
+```sh
+sh linux/scripts/install_driver.sh --ifname end0 --channels 0-5
+sh linux/scripts/install_driver.sh --ifname eth0 --bitrate 1000000 --dbitrate 8000000
+sh linux/scripts/install_driver.sh --no-deps --dry-run
+sh linux/scripts/install_driver.sh --no-load
+sh linux/scripts/install_driver.sh --require-gateway
+```
+
+Common failures:
+
+- Missing `/lib/modules/$(uname -r)/build`: install matching kernel headers or
+  pass `KDIR=/path/to/kernel/build`.
+- Missing SocketCAN kernel config: install or boot a kernel with SocketCAN
+  enabled; this is the case that may require a kernel rebuild.
+- `__aeabi_uldivmod` during modpost on 32-bit ARM: the driver contains a raw
+  64-bit divide. Use the current driver source; time divisions must go through
+  kernel helpers such as `div_u64()`.
+- `vermagic` mismatch: rebuild `eth2can.ko` on the target or against the exact
+  running kernel build tree.
+- `gateway heartbeat was not observed`: the module loaded, but Linux did not
+  receive the MCXE31B E2CF heartbeat on the selected Ethernet interface. This
+  is not an installation failure unless `--require-gateway` is used. The script
+  skips channel configuration because retrying it would only time out:
+
+  ```sh
+  ip -br link show eth0
+  sudo dmesg | tail -80
+  sudo tcpdump -eni eth0 'ether proto 0x88b5 or (vlan and ether proto 0x88b5)'
+  ```
+
+  Expected traffic is EtherType `0x88b5` heartbeat frames every 100 ms. If
+  `tcpdump` sees nothing, check MCU power, cable, selected interface,
+  switch/VLAN path, and that the raw-Ethernet MCXE31B firmware is running.
+  If `tcpdump` sees frames but the driver does not print `eth2can: gateway
+  alive`, capture a short packet log and compare the E2CF header/heartbeat
+  format with `src/e2cf_proto.h`.

@@ -24,8 +24,9 @@ export CROSS_COMPILE="${CROSS_COMPILE:-aarch64-none-linux-gnu-}"
 
 export JOBS="${JOBS:-$(nproc)}"
 
-# --- driver location ------------------------------------------------------
-export DRVDIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")"
+# --- repository / driver location ----------------------------------------
+export REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
+export DRVDIR="${REPO_ROOT}/linux"
 
 # --- board deploy target (adjust to your bench) ---------------------------
 export BOARD_IP="${BOARD_IP:-10.17.18.9}"

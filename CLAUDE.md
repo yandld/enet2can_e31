@@ -10,8 +10,10 @@ Three parts, all in this repo:
 
 - **Root** — MCU firmware (bare-metal Cortex-M7 superloop, no RTOS/lwIP). Project logic in
   `source/`; `board/board.c` + `board/hardware_init.c` are board glue.
-- **`linux/`** — Linux kernel driver `eth2can.ko` (single file `linux/src/eth2can.c`) exposing
-  the 6 channels as standard SocketCAN devices `eth2can0..5`, plus build/deploy scripts.
+- **`linux/`** — customer-facing Linux kernel driver `eth2can.ko` (single file
+  `linux/src/eth2can.c`) exposing the 6 channels as standard SocketCAN devices
+  `eth2can0..5`, plus the portable installer `linux/scripts/install_driver.sh`.
+- **`tools/imx95/`** — internal i.MX95/RTE kernel build, deploy, and bundle scripts.
 - **`eth2can_design/`** — three Chinese design docs. `01_E2CF协议规范.md` is the **normative
   protocol spec**; its §9 conformance checklist is binding (deviating code is a spec violation,
   not an implementation choice). 02 = Linux side, 03 = MCXE side. The root `README.md` has a
@@ -49,15 +51,27 @@ instead pushed in-band at 1 Hz via `E2CF_MSG_STATS`. Bring-up knobs in `source/e
 (default, auto-START all channels and disarm safe state until first HB),
 `E2CF_AUTOSTART_LOOPBACK=1` (transceiver-less self-test; requires TDC off — already handled).
 
-### Linux driver (`linux/scripts/`, one-file config in `env.sh`)
+### Linux driver
 
-All scripts source `env.sh`; every variable is environment-overridable (`KSRC` = RTE 6.18 kernel
-tree at `../../../real-time-edge-linux`, `KOUT`, `TOOLCHAIN_DIR` = aarch64-none-linux-gnu 14.3,
-`BOARD_IP`/`BOARD_USER`/`BOARD_DIR`). Do **not** source the Yocto SDK env script for
-kernel/module builds — its sysroot cflags break kbuild.
+Customer-facing install path:
 
 ```sh
-cd linux/scripts
+sudo sh linux/scripts/install_driver.sh --ifname eth0
+```
+
+The installer builds `eth2can.ko` against the running kernel, loads it for the
+current boot, and configures channels when the MCXE31B gateway heartbeat is
+visible. It does not require a custom i.MX95 kernel flow.
+
+i.MX95/RTE internal tools live in `tools/imx95/`. Those scripts source
+`tools/imx95/env.sh`; every variable is environment-overridable (`KSRC` = RTE
+6.18 kernel tree at `../../../real-time-edge-linux`, `KOUT`, `TOOLCHAIN_DIR` =
+aarch64-none-linux-gnu 14.3, `BOARD_IP`/`BOARD_USER`/`BOARD_DIR`). Do **not**
+source the Yocto SDK env script for kernel/module builds — its sysroot cflags
+break kbuild.
+
+```sh
+cd tools/imx95
 ./build_kernel.sh prepare          # first time: defconfig + CAN built-in (=y) + modules_prepare
 ./build_driver.sh                  # cross-compile eth2can.ko (auto-prepares if needed)
 ./build_driver.sh host             # build against host kernel — quick API/syntax check

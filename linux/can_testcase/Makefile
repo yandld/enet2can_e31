@@ -3,37 +3,36 @@
 # Copyright 2026 NXP
 # Author: Ken Li <ken.li@nxp.com>
 #
-# Environment auto-detection: x86 host = aarch64 cross + static link;
-# aarch64 board = native gcc. `make host` = x86 ASan compile check.
+# Default build is native on the current Linux platform. Use `make cross`
+# explicitly when producing an aarch64 static binary.
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
-ARCH_NOW := $(shell uname -m)
-NATIVE   ?= $(if $(filter aarch64,$(ARCH_NOW)),1,0)
-
-TOOLCHAIN_DIR ?= /opt/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-linux-gnu
 CROSS_COMPILE ?= aarch64-none-linux-gnu-
-
-ifeq ($(NATIVE),1)
-  CC      := gcc
-  LDFLAGS ?=
+ifneq ($(strip $(TOOLCHAIN_DIR)),)
+CROSS_CC := $(TOOLCHAIN_DIR)/bin/$(CROSS_COMPILE)gcc
 else
-  CC      := $(TOOLCHAIN_DIR)/bin/$(CROSS_COMPILE)gcc
-  LDFLAGS ?= -static
+CROSS_CC := $(CROSS_COMPILE)gcc
 endif
 
+CC ?= cc
 CFLAGS ?= -O2 -g -Wall -Wextra -Wformat=2 -D_GNU_SOURCE -pthread
+LDFLAGS ?=
+CROSS_LDFLAGS ?= -static
 
 all: canperf
 
 canperf: src/canperf.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
+cross: src/canperf.c
+	$(CROSS_CC) $(CFLAGS) $(CROSS_LDFLAGS) -o canperf $<
+
 host: src/canperf.c
-	gcc $(CFLAGS) -fsanitize=address,undefined -o canperf.host $<
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -o canperf.host $<
 	./canperf.host --help > /dev/null
 
 clean:
 	rm -f canperf canperf.host
 
-.PHONY: all host clean
+.PHONY: all cross host clean

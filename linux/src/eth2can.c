@@ -492,6 +492,9 @@ static int e2cf_ndo_open(struct net_device *ndev)
 	unsigned long flags;
 	int err;
 
+	if (!READ_ONCE(chan->edev->gw_alive))
+		return -ENETDOWN;
+
 	err = open_candev(ndev);
 	if (err)
 		return err;
@@ -1345,7 +1348,7 @@ static void e2cf_hb_work(struct work_struct *work)
 	e2cf_hb_body_t hb = {
 		.state = E2CF_HB_STATE_READY,
 		.nchan = E2CF_NUM_CHANNELS,
-		.uptime_s = (u32)(ktime_get_ns() / NSEC_PER_SEC),
+		.uptime_s = (u32)div_u64(ktime_get_ns(), NSEC_PER_SEC),
 	};
 
 	skb = e2cf_build_skb(edev, E2CF_MSG_HB, E2CF_HB_BODY_SIZE, 1, &body);
@@ -1681,8 +1684,11 @@ static int __init e2cf_init(void)
 	 * discovery deadlocks - masked whenever tcpdump (promiscuous mode)
 	 * happens to be running. */
 	rtnl_lock();
-	dev_mc_add(edev->lower, e2cf_hb_mcast);
+	err = dev_mc_add(edev->lower, e2cf_hb_mcast);
 	rtnl_unlock();
+	if (err)
+		pr_warn("%s: failed to add HB multicast filter (%d); discovery may require promiscuous mode\n",
+			E2CF_DRV_NAME, err);
 
 	edev->last_hb_rx = jiffies;
 	schedule_delayed_work(&edev->hb_work, msecs_to_jiffies(E2CF_HB_PERIOD_MS));
