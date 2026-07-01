@@ -20,7 +20,7 @@ IFNAME=
 VID=-1
 PEER=
 BITRATE=1000000
-DBITRATE=8000000
+DBITRATE=5000000
 CHANNELS=0-5
 NO_DEPS=0
 NO_LOAD=0
@@ -45,7 +45,7 @@ Options:
   --vid VID            VLAN id passed to the module. Default: -1.
   --peer MAC           Static peer MAC passed to the module. Default: learn from HB.
   --bitrate N          Nominal CAN bitrate. Default: 1000000.
-  --dbitrate N         CAN FD data bitrate. Default: 8000000.
+  --dbitrate N         CAN FD data bitrate. Default: 5000000.
   --channels LIST      CAN channel list, for example 0-5 or 0,2-3. Default: 0-5.
   --no-deps            Do not try to install build/runtime packages.
   --no-load            Build only; do not modprobe/insmod eth2can.

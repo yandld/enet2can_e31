@@ -267,7 +267,7 @@ static bool sdk_init_guard_ok(uint32_t clk, const flexcan_timing_config_t *t, ui
     return true;
 }
 
-/* Default timing for autostart: SDK-calculated 1M/8M @ 80 MHz. */
+/* Default timing for autostart: SDK-calculated 1M/5M @ 80 MHz. */
 static bool timing_default(can_ch_t *ch)
 {
     flexcan_timing_config_t timing;
@@ -470,7 +470,7 @@ bool can_hw_init(void)
 
         if (!timing_default(ch))
         {
-            LOG_ERR(DBG_M_CAN, "CAN%u: no exact 1M/8M timing at PE=%luHz", i,
+            LOG_ERR(DBG_M_CAN, "CAN%u: no exact 1M/5M timing at PE=%luHz", i,
                     (unsigned long)ch->clk_freq);
             return false;
         }
@@ -1006,7 +1006,7 @@ static void chan_tx_complete(can_ch_t *ch)
     {
 #if E2CF_PROFILE
         /* Close the bus-transmission interval opened at TX MB load: this is the
-         * physical CAN frame time (~111 us for 64B FD at 1M/8M). */
+         * physical CAN frame time for a 64-byte CAN FD frame at 1M/5M. */
         gw_prof_add(PROF_TX_BUS, gap_t0 - ch->tx_mb_cyc);
 #endif
         ch->tx_busy = false;

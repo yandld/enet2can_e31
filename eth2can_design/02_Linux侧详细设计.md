@@ -308,7 +308,7 @@ while (!kthread_should_stop()) {
 
 ### 4.5 配置通道(netlink 截获)
 
-`ip link set eth2can2 type can bitrate 1000000 dbitrate 8000000 fd on` → `can_changelink`(RTNL 内,IFF_UP 时内核已拒绝)按 `bittiming_const` 算好 brp/tseg → 调驱动回调:
+`ip link set eth2can2 type can bitrate 1000000 dbitrate 5000000 fd on` → `can_changelink`(RTNL 内,IFF_UP 时内核已拒绝)按 `bittiming_const` 算好 brp/tseg → 调驱动回调:
 
 ```c
 static int e2cf_set_bittiming(struct net_device *ndev)
@@ -386,7 +386,7 @@ static const struct can_bittiming_const e2cf_dat_btc = {
 
 | # | 测试 | 方法 | 通过标准 |
 |---|---|---|---|
-| T1 | 功能:6 节点配置 | `ip link set eth2canX type can bitrate 1000000 dbitrate 8000000 fd on up` ×6 | 全部 UP,GET_INFO 协商成功 |
+| T1 | 功能:6 节点配置 | `ip link set eth2canX type can bitrate 1000000 dbitrate 5000000 fd on up` ×6 | 全部 UP,GET_INFO 协商成功 |
 | T2 | 回环延迟 | eth2canX 发 → MCU 侧 CAN 线对接 eth2canY → 收;用 `skb->tstamp`+硬件 GPIO 比对 | p99 单向附加延迟达协议 §8 预算 |
 | T3 | 满载吞吐 | 6 路双向 64B 满载(cangen 改造版,61 380 fps/向)持续 1 h | 零丢帧(seq_lost=0,rx_ovf=0),CPU(core5)<70% |
 | T4 | 小帧风暴 | 6 路 8B 145 900 fps 持续 10 min | 零丢帧,聚合直方图显示 n≥4 |

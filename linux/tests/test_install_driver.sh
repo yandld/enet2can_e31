@@ -52,6 +52,18 @@ EOF
     cat >"$mock_bin/make" <<EOF
 #!/bin/sh
 echo "make \$*" >>"$log_file"
+out_dir=
+while [ \$# -gt 0 ]; do
+    if [ "\$1" = "-C" ]; then
+        shift
+        out_dir=\${1:-}
+    fi
+    shift || break
+done
+if [ -n "\$out_dir" ] && [ ! -e "\$out_dir/eth2can.ko" ]; then
+    : >"\$out_dir/eth2can.ko"
+    : >"$tmp/mock-ko-created"
+fi
 exit 0
 EOF
     chmod +x "$mock_bin/make"
@@ -77,7 +89,14 @@ EOF
 }
 
 tmp=${TMPDIR:-/tmp}/e2cf-install-test.$$
-trap 'rm -rf "$tmp"' EXIT INT HUP TERM
+cleanup()
+{
+    if [ -f "$tmp/mock-ko-created" ]; then
+        rm -f "$ROOT_DIR/linux/eth2can.ko"
+    fi
+    rm -rf "$tmp"
+}
+trap cleanup EXIT INT HUP TERM
 mkdir -p "$tmp"
 
 test_help_lists_portable_options()
@@ -89,6 +108,7 @@ test_help_lists_portable_options()
     assert_contains "$out" "--ifname IFACE"
     assert_contains "$out" "--dry-run"
     assert_contains "$out" "--require-gateway"
+    assert_contains "$out" "--dbitrate N         CAN FD data bitrate. Default: 5000000."
     assert_contains "$out" "KDIR=/path/to/kernel/build"
 }
 
@@ -351,7 +371,7 @@ EOF
     sh "$SCRIPT" --no-deps --ifname eth0 --channels 0 >"$out" 2>"$err"
 
     assert_not_contains "$err" "gateway heartbeat was not observed"
-    assert_contains "$log_file" "ip link set eth2can0 type can"
+    assert_contains "$log_file" "ip link set eth2can0 type can bitrate 1000000 dbitrate 5000000 fd on"
 }
 
 test_no_gateway_heartbeat_skips_channel_configuration()

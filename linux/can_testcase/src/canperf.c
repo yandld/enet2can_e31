@@ -89,8 +89,6 @@
 #include <unistd.h>
 #include <net/if.h>
 #include <sys/mman.h>
-#include <fcntl.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
@@ -294,12 +292,11 @@ static int link_set_up(int fd, const char *ifname, bool up)
 	return nl_transact(fd, &req);
 }
 
-/* Configure one CAN channel: down -> set bitrate/dbitrate (the kernel
+/* Configure one CAN FD channel: down -> set bitrate/dbitrate (the kernel
  * computes the bit timing from the driver's bittiming_const when only
- * the bitrate field is filled, same as iproute2) -> up.
- * dbitrate == 0 selects classical CAN (no FD). */
+ * the bitrate field is filled, same as iproute2) -> up. */
 static int chan_setup(int fd, int ch, unsigned int bitrate,
-		      unsigned int dbitrate, bool loopback)
+		      unsigned int dbitrate)
 {
 	char dev[20];
 	struct nl_req req;
@@ -326,9 +323,8 @@ static int chan_setup(int fd, int ch, unsigned int bitrate,
 	infodata = nl_nest_begin(&req, IFLA_INFO_DATA);
 
 	memset(&cm, 0, sizeof(cm));
-	cm.mask = CAN_CTRLMODE_FD | CAN_CTRLMODE_LOOPBACK;
-	cm.flags = (dbitrate ? CAN_CTRLMODE_FD : 0) |
-		   (loopback ? CAN_CTRLMODE_LOOPBACK : 0);
+	cm.mask = CAN_CTRLMODE_FD;
+	cm.flags = CAN_CTRLMODE_FD;
 	nl_attr_put(&req, IFLA_CAN_CTRLMODE, &cm, sizeof(cm));
 
 	memset(&bt, 0, sizeof(bt));
@@ -541,13 +537,10 @@ struct opts {
 	int report_s;		/* progress report period */
 	unsigned int window;	/* probes in flight per pair (1 = lockstep) */
 	bool setup;		/* configure channels at startup */
-	bool csv;		/* dump per-frame timestamps */
 	bool bidir;		/* mirror every pair (A:B adds B:A) */
 	bool sweep;		/* max-sustainable-rate search */
 	long sweep_frames;	/* probes per pair per sweep step */
 	int p99_limit_us;	/* sweep pass criterion on total p99 */
-	bool performance;	/* decoupled one-way throughput + loss test */
-	bool loopback;		/* controller loopback (LPB): same-channel x:x pairs */
 	unsigned int bitrate, dbitrate;
 };
 
@@ -654,10 +647,8 @@ static int probe_once(struct pair_ctx *pc, int s_tx, int s_echo, int s_rx,
 	return 0;
 }
 
-/* Fold one completed probe's timestamps into the pair histograms and the
- * optional per-frame CSV (shared by the lockstep and windowed engines). */
-static void record_sample(struct pair_ctx *pc, FILE *csv, uint32_t seq,
-			  const uint64_t ts[TS_N])
+/* Fold one completed probe's timestamps into the pair histograms. */
+static void record_sample(struct pair_ctx *pc, const uint64_t ts[TS_N])
 {
 	int64_t total = (int64_t)(ts[TS_T5] - ts[TS_T1]);
 
@@ -677,12 +668,6 @@ static void record_sample(struct pair_ctx *pc, FILE *csv, uint32_t seq,
 	} else {
 		pc->no_hw_stamp++;
 	}
-	if (csv)
-		fprintf(csv, "%u,%llu,%llu,%llu,%llu,%llu,%llu\n", seq,
-			(unsigned long long)ts[TS_T1], (unsigned long long)ts[TS_T2],
-			(unsigned long long)ts[TS_X], (unsigned long long)ts[TS_Y],
-			(unsigned long long)ts[TS_NICRX],
-			(unsigned long long)ts[TS_T5]);
 }
 
 /* One in-flight probe of the windowed engine. */
@@ -696,12 +681,12 @@ struct probe_slot {
 
 /* Windowed measurement loop: up to o->window probes in flight per pair
  * (slots backed by the driver's 16-deep TXC window, which provides the
- * backpressure), sends paced on an absolute grid - so --gap-us sets the
- * OFFERED load (1e6/gap fps) instead of being RTT-bound like lockstep.
+ * backpressure), sends paced on an absolute grid, so the internal gap sets
+ * the offered load instead of being RTT-bound like lockstep.
  * This is the throughput / loss-rate engine; segment histograms are
  * filled exactly like in lockstep. */
 static void pair_run_window(struct pair_ctx *pc, int s_tx, int s_echo,
-			    int s_rx, uint32_t can_id, size_t mtu, FILE *csv)
+			    int s_rx, uint32_t can_id, size_t mtu)
 {
 	const struct opts *o = pc->opts;
 	struct probe_slot slots[MAX_WINDOW];
@@ -855,13 +840,13 @@ static void pair_run_window(struct pair_ctx *pc, int s_tx, int s_echo,
 			if (!sl->used)
 				continue;
 			if (sl->got_rx && sl->got_echo) {
-				record_sample(pc, csv, sl->seq, sl->ts);
+				record_sample(pc, sl->ts);
 				sl->used = false;
 				outstanding--;
 			} else if (now >= sl->deadline || stop_flag) {
 				if (sl->got_rx) {
 					pc->echo_miss++;
-					record_sample(pc, csv, sl->seq, sl->ts);
+					record_sample(pc, sl->ts);
 				} else {
 					pc->lost++;
 				}
@@ -879,11 +864,10 @@ static void *pair_thread(void *arg)
 {
 	struct pair_ctx *pc = arg;
 	const struct opts *o = pc->opts;
-	char tx_dev[20], rx_dev[20], csv_path[40];
+	char tx_dev[20], rx_dev[20];
 	uint32_t can_id = PROBE_ID_BASE + (uint32_t)pc->tx_ch;
 	size_t mtu = (o->size > 8) ? CANFD_MTU : CAN_MTU;
 	int s_tx, s_echo, s_rx;
-	FILE *csv = NULL;
 	struct timespec next;
 	uint64_t end_ns = o->duration_s ?
 		now_mono_ns() + (uint64_t)o->duration_s * 1000000000ull : 0;
@@ -899,18 +883,10 @@ static void *pair_thread(void *arg)
 	/* the TX socket never reads anything back */
 	setsockopt(s_tx, SOL_CAN_RAW, CAN_RAW_FILTER, NULL, 0);
 
-	if (o->csv) {
-		snprintf(csv_path, sizeof(csv_path), "pair-%d-%d.csv",
-			 pc->tx_ch, pc->rx_ch);
-		csv = fopen(csv_path, "w");
-		if (csv)
-			fprintf(csv, "seq,t1_ns,t2_ns,X_gw,Y_gw,nicrx_ns,t5_ns\n");
-	}
-
 	pc->elapsed_ns = now_mono_ns();
 
 	if (o->window > 1) {
-		pair_run_window(pc, s_tx, s_echo, s_rx, can_id, mtu, csv);
+		pair_run_window(pc, s_tx, s_echo, s_rx, can_id, mtu);
 		goto done;
 	}
 
@@ -931,7 +907,7 @@ static void *pair_thread(void *arg)
 			goto pace;
 		}
 
-		record_sample(pc, csv, seq, ts);
+		record_sample(pc, ts);
 pace:
 		next.tv_nsec += (long)o->gap_us * 1000;
 		while (next.tv_nsec >= 1000000000L) {
@@ -945,8 +921,6 @@ pace:
 
 done:
 	pc->elapsed_ns = now_mono_ns() - pc->elapsed_ns;
-	if (csv)
-		fclose(csv);
 out:
 	if (s_tx >= 0)
 		close(s_tx);
@@ -1056,13 +1030,6 @@ static void pair_report(const struct pair_ctx *pc)
 	if (pc->no_hw_stamp && pc->no_hw_stamp >= pc->h_total.count)
 		printf("| %-80s |\n",
 		       "WARNING: no gateway timestamps (driver/firmware mismatch) - only total/L1/L4 valid");
-	if (pc->opts->csv) {
-		char note[64];
-
-		snprintf(note, sizeof(note), "per-frame data: pair-%d-%d.csv",
-			 pc->tx_ch, pc->rx_ch);
-		printf("| %-80s |\n", note);
-	}
 	printf(
 "+----------------------------------------------------------------------------------+\n");
 }
@@ -1217,10 +1184,10 @@ static void counters_delta(const struct cnt_snap *a, const struct cnt_snap *b)
 }
 
 /* ========================================================================
- * Run orchestration (shared by the normal run and the sweep)
+ * Run orchestration (shared by the latency run and bandwidth search)
  * ======================================================================== */
 
-/* Clear one pair's accumulated results (between sweep steps). */
+/* Clear one pair's accumulated results between bandwidth search steps. */
 static void pair_reset(struct pair_ctx *pc)
 {
 	memset(&pc->h_total, 0, sizeof(pc->h_total));
@@ -1279,8 +1246,8 @@ static int live_rt_draw(struct pair_ctx *pairs, int npairs, double el,
 }
 
 /* Launch one measurement thread per pair, refresh the live dashboard (TTY) or
- * silently wait (redirected) until all finish, join. `quiet` (sweep) forces the
- * silent path. Returns 1 on thread-creation failure. */
+ * silently wait (redirected) until all finish, join. `quiet` forces the silent
+ * path for bandwidth search steps. Returns 1 on thread-creation failure. */
 static int run_pairs(const struct opts *o, struct pair_ctx *pairs,
 		     int npairs, bool quiet)
 {
@@ -1341,11 +1308,11 @@ static int run_pairs(const struct opts *o, struct pair_ctx *pairs,
 }
 
 /* ========================================================================
- * --sweep: max-sustainable-rate search
+ * Bandwidth: max-sustainable-rate search
  *
  * Windowed engine at a controlled offered rate per step. Ladder up from
  * theory/8 doubling the rate until a step fails (any loss, or the worst
- * pair's total p99 above --p99-limit), then binary-search the pass/fail
+ * pair's total p99 above the internal limit), then binary-search the pass/fail
  * gap down to ~3%. All pairs run concurrently at the same offered rate;
  * the verdict takes the worst pair.
  * ======================================================================== */
@@ -1358,11 +1325,15 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 	bool saturated = false; /* offered rose but delivered plateaued */
 	int step = 0;
 
-	o->count = o->sweep_frames;
-	o->duration_s = 0;
+	if (!o->duration_s)
+		o->count = o->sweep_frames;
 
-	printf("sweep: %d pair(s), window=%u, %ld frames/step, criterion: lost=0 & p99<=%dus\n",
-	       npairs, o->window, o->sweep_frames, o->p99_limit_us);
+	if (o->duration_s)
+		printf("bandwidth: %d pair(s), window=%u, %lds/step, criterion: lost=0 & p99<=%dus\n",
+		       npairs, o->window, o->duration_s, o->p99_limit_us);
+	else
+		printf("bandwidth: %d pair(s), window=%u, %ld frames/step, criterion: lost=0 & p99<=%dus\n",
+		       npairs, o->window, o->sweep_frames, o->p99_limit_us);
 	printf("+------+------------+-----------+----------+----------+---------+\n"
 	       "| step | offered    | delivered |   lost   |  p99(us) | verdict |\n"
 	       "+------+------------+-----------+----------+----------+---------+\n");
@@ -1398,8 +1369,9 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 		/* a step with (almost) no completed probes is broken setup,
 		 * never a pass - e.g. sockets failed to open */
 		pass = !lost && p99 <= (double)o->p99_limit_us && !stop_flag &&
+		       (o->duration_s ? completed > 0 :
 		       completed >= (uint64_t)o->sweep_frames *
-				    (uint64_t)npairs * 9U / 10U;
+				    (uint64_t)npairs * 9U / 10U);
 		printf("| %4d | %10.0f | %9.0f | %8llu | %8.0f | %-7s |\n",
 		       ++step, rate, ach, (unsigned long long)lost, p99,
 		       stop_flag ? "ABORT" : pass ? "PASS" : "FAIL");
@@ -1483,600 +1455,78 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 			       best_deliv, best_off, bus_util);
 		}
 	} else {
-		printf("no passing rate found (link broken, or lower the start rate / raise --p99-limit)\n");
+		printf("no passing rate found (link broken, or lower the start rate / raise the p99 limit)\n");
 	}
 	return (best_deliv > 0) ? 0 : 1;
-}
-
-/* ========================================================================
- * --performance: decoupled one-way throughput + loss (no latency)
- *
- * One wired pair, two independent threads: a TX thread floods `count` frames
- * on eth2can<tx> paced by --gap-us; an RX thread counts the frames that arrive
- * on eth2can<rx> (the partner that physically receives them over the CAN bus).
- * No probe ever waits for a return, so unlike the round-trip engines this
- * measures the raw forward path (Linux TX + CAN bus delivery). A per-seq bitmap
- * gives the exact unique-receive count, hence exact loss. Reports offered FPS,
- * delivered FPS and loss rate only - latency is out of scope here.
- * ======================================================================== */
-#define PERF_BATCH 64	/* frames per recvmmsg/sendmmsg syscall */
-
-/* ========================================================================
- * --performance: decoupled one-way throughput + loss (no latency)
- *
- * One TX thread and one RX thread drive ALL channels, so the thread count is
- * fixed at 2 regardless of how many pairs run (no per-pair threads, no core
- * oversubscription). The TX thread round-robins non-blocking sendmmsg across
- * every channel and, when all windows are full, usleep()s to YIELD - CAN raw
- * sockets do NOT signal TX-window backpressure via EPOLLOUT (poll-out tracks
- * the socket buffer, not the gateway window), so epoll on the TX side would
- * busy-spin at RT priority and starve the softirq that frees the window. The
- * RX side CAN use epoll (EPOLLIN is valid for CAN): the RX thread drains every
- * readable channel (recvmmsg), skipping the local software echo so
- * controller-loopback (x:x) is not double-counted. A per-seq bitmap gives exact
- * loss for count-bound runs; duration runs count (loss = sent - recv).
- * ======================================================================== */
-struct perf_ctx {
-	int tx_ch, rx_ch;
-	const struct opts *o;
-	long count;			/* 0 = duration-bound */
-	/* TX state (owned by the single TX thread) */
-	int tx_fd;
-	uint32_t tx_seq;
-	uint64_t sent;
-	uint64_t grid;			/* next send time, paced mode */
-	uint64_t tx_start_ns, tx_end_ns;
-	int tx_pair_done;
-	int tx_err;
-	/* RX state (owned by the single RX thread) */
-	int rx_fd;
-	uint64_t recv, rx_dup, rx_alien;
-	uint64_t rx_first_ns, rx_last_ns;
-	uint8_t *seen;			/* per-seq bitmap (count mode) */
-};
-
-struct perf_set {
-	struct perf_ctx *ctx;
-	int npairs;
-	const struct opts *o;
-	volatile int tx_all_done;
-	volatile int rx_done;
-};
-
-/* Pin the calling thread to one CPU (no-op when cpu < 0). */
-static void perf_pin(int cpu)
-{
-	cpu_set_t set;
-
-	if (cpu < 0)
-		return;
-	CPU_ZERO(&set);
-	CPU_SET((size_t)cpu, &set);
-	pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
-}
-
-/* Single TX thread for all channels. CAN raw sockets do NOT report TX-window
- * backpressure via EPOLLOUT (poll-out is always ready on the socket buffer),
- * so epoll is useless here and a non-blocking busy-retry would spin at RT
- * priority and starve the softirq that processes the uplink TXCs (which free
- * the window) - deadlocking after ~one window. Instead: non-blocking sendmmsg
- * round-robin, and when every channel's window is full, usleep() to YIELD so
- * the softirq can free a slot. --gap-us > 1 paces each channel on its grid. */
-static void *perf_tx_thread(void *arg)
-{
-	struct perf_set *S = arg;
-	const struct opts *o = S->o;
-	size_t mtu = (o->size > 8) ? CANFD_MTU : CAN_MTU;
-	bool paced = (o->gap_us > 1);
-	struct perf_tx_batch {
-		struct mmsghdr m[PERF_BATCH];
-		struct iovec iov[PERF_BATCH];
-		struct canfd_frame cf[PERF_BATCH];
-	} *B;
-	uint64_t start, end_ns;
-	int i, j, remaining = S->npairs;
-
-	perf_pin(0);
-	B = calloc((size_t)S->npairs, sizeof(*B));
-	if (!B) {
-		for (i = 0; i < S->npairs; i++) {
-			S->ctx[i].tx_err = 1;
-			S->ctx[i].tx_pair_done = 1;
-		}
-		S->tx_all_done = 1;
-		return NULL;
-	}
-	start = now_mono_ns();
-	end_ns = o->duration_s ? start + (uint64_t)o->duration_s * 1000000000ull : 0;
-	for (i = 0; i < S->npairs; i++) {
-		struct perf_ctx *p = &S->ctx[i];
-		char dev[20];
-		int fl;
-
-		snprintf(dev, sizeof(dev), "eth2can%d", p->tx_ch);
-		p->tx_fd = open_can_socket(dev, o->size > 8,
-					   PROBE_ID_BASE + (uint32_t)p->tx_ch, false);
-		if (p->tx_fd < 0) {
-			p->tx_err = 1;
-			p->tx_pair_done = 1;
-			remaining--;
-			continue;
-		}
-		fl = fcntl(p->tx_fd, F_GETFL, 0);
-		fcntl(p->tx_fd, F_SETFL, fl | O_NONBLOCK);
-		p->tx_start_ns = start;
-		p->grid = start;
-		for (j = 0; j < PERF_BATCH; j++) {
-			memset(&B[i].cf[j], 0, sizeof(B[i].cf[j]));
-			B[i].cf[j].can_id = PROBE_ID_BASE + (uint32_t)p->tx_ch;
-			B[i].cf[j].len = (uint8_t)o->size;
-			if (o->size > 8)
-				B[i].cf[j].flags = CANFD_BRS;
-			memcpy(B[i].cf[j].data, &(uint32_t){ PROBE_MAGIC }, 4);
-			B[i].iov[j].iov_base = &B[i].cf[j];
-			B[i].iov[j].iov_len = mtu;
-			memset(&B[i].m[j].msg_hdr, 0, sizeof(B[i].m[j].msg_hdr));
-			B[i].m[j].msg_hdr.msg_iov = &B[i].iov[j];
-			B[i].m[j].msg_hdr.msg_iovlen = 1;
-		}
-	}
-
-	while (remaining > 0 && !stop_flag) {
-		uint64_t now = now_mono_ns();
-		uint64_t min_grid = (uint64_t)-1;
-		int progressed = 0;
-
-		if (end_ns && now >= end_ns)
-			break;
-		for (i = 0; i < S->npairs; i++) {
-			struct perf_ctx *p = &S->ctx[i];
-			int batch, m;
-
-			if (p->tx_pair_done)
-				continue;
-			if (paced && p->grid > now) {
-				if (p->grid < min_grid)
-					min_grid = p->grid;
-				continue;
-			}
-			if (end_ns) {
-				batch = PERF_BATCH;
-			} else {
-				batch = (int)((uint32_t)p->count - p->tx_seq);
-				if (batch > PERF_BATCH)
-					batch = PERF_BATCH;
-				if (batch <= 0) {
-					p->tx_pair_done = 1;
-					p->tx_end_ns = now;
-					remaining--;
-					continue;
-				}
-			}
-			for (j = 0; j < batch; j++)
-				memcpy(B[i].cf[j].data + 4,
-				       &(uint32_t){ p->tx_seq + (uint32_t)j }, 4);
-			m = sendmmsg(p->tx_fd, B[i].m, (unsigned int)batch, MSG_DONTWAIT);
-			if (m > 0) {
-				p->sent += (uint64_t)m;
-				p->tx_seq += (uint32_t)m;
-				progressed = 1;
-				if (paced)
-					p->grid += (uint64_t)m *
-						   (uint64_t)o->gap_us * 1000ull;
-				if (!end_ns && p->tx_seq >= (uint32_t)p->count) {
-					p->tx_pair_done = 1;
-					p->tx_end_ns = now_mono_ns();
-					remaining--;
-				}
-			} else if (errno == EAGAIN || errno == ENOBUFS ||
-				   errno == EINTR) {
-				/* this channel's window/qdisc is full */
-			} else {
-				p->tx_err = 1;
-				p->tx_pair_done = 1;
-				p->tx_end_ns = now;
-				remaining--;
-			}
-		}
-		if (remaining <= 0)
-			break;
-		if (!progressed) {
-			/* nothing went out: yield so the softirq can free a window
-			 * slot (busy-retry would starve it). paced: sleep to grid. */
-			if (paced && min_grid != (uint64_t)-1) {
-				uint64_t w = (end_ns && end_ns < min_grid) ?
-					     end_ns : min_grid;
-				struct timespec ts = {
-					.tv_sec = (time_t)(w / 1000000000ull),
-					.tv_nsec = (long)(w % 1000000000ull),
-				};
-
-				clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME,
-						&ts, NULL);
-			} else {
-				usleep(100);
-			}
-		}
-	}
-	{
-		uint64_t now = now_mono_ns();
-
-		for (i = 0; i < S->npairs; i++) {
-			if (S->ctx[i].tx_start_ns && !S->ctx[i].tx_end_ns)
-				S->ctx[i].tx_end_ns = now;
-			if (S->ctx[i].tx_fd >= 0)
-				close(S->ctx[i].tx_fd);
-		}
-	}
-	free(B);
-	S->tx_all_done = 1;
-	return NULL;
-}
-
-/* Single RX thread: epoll over every channel's non-blocking RX socket, draining
- * each readable one with recvmmsg. Skips the local software echo (own TX) so
- * controller loopback is counted once; counts unique in-range frames (bitmap)
- * or all valid frames (duration). Stops once the TX thread is done and the link
- * has been quiet for a drain grace. */
-static void *perf_rx_thread(void *arg)
-{
-	struct perf_set *S = arg;
-	const struct opts *o = S->o;
-	struct mmsghdr m[PERF_BATCH];
-	struct iovec iov[PERF_BATCH];
-	struct canfd_frame fr[PERF_BATCH];
-	uint64_t quiet_deadline = 0;
-	int ep, i;
-
-	perf_pin(1);
-	ep = epoll_create1(0);
-	if (ep < 0) {
-		S->rx_done = 1;
-		return NULL;
-	}
-	for (i = 0; i < S->npairs; i++) {
-		struct perf_ctx *p = &S->ctx[i];
-		struct epoll_event ev = { .events = EPOLLIN, .data.u32 = (uint32_t)i };
-		char dev[20];
-		int fl;
-
-		snprintf(dev, sizeof(dev), "eth2can%d", p->rx_ch);
-		p->rx_fd = open_can_socket(dev, o->size > 8,
-					   PROBE_ID_BASE + (uint32_t)p->tx_ch, false);
-		if (p->rx_fd < 0)
-			continue;
-		fl = fcntl(p->rx_fd, F_GETFL, 0);
-		fcntl(p->rx_fd, F_SETFL, fl | O_NONBLOCK);
-		epoll_ctl(ep, EPOLL_CTL_ADD, p->rx_fd, &ev);
-	}
-	for (i = 0; i < PERF_BATCH; i++) {
-		iov[i].iov_base = &fr[i];
-		iov[i].iov_len = sizeof(fr[i]);
-		memset(&m[i].msg_hdr, 0, sizeof(m[i].msg_hdr));
-		m[i].msg_hdr.msg_iov = &iov[i];
-		m[i].msg_hdr.msg_iovlen = 1;
-	}
-
-	while (!stop_flag) {
-		struct epoll_event evs[MAX_PAIRS];
-		int n = epoll_wait(ep, evs, S->npairs, 50);
-		uint64_t now = now_mono_ns();
-		int got_any = 0, e;
-
-		for (e = 0; e < n; e++) {
-			struct perf_ctx *p = &S->ctx[evs[e].data.u32];
-			int got;
-
-			while ((got = recvmmsg(p->rx_fd, m, PERF_BATCH,
-					       MSG_DONTWAIT, NULL)) > 0) {
-				for (i = 0; i < got; i++) {
-					uint32_t magic, rseq;
-
-					if (m[i].msg_hdr.msg_flags & MSG_DONTROUTE)
-						continue;
-					if (m[i].msg_len < 8)
-						continue;
-					memcpy(&magic, fr[i].data, 4);
-					memcpy(&rseq, fr[i].data + 4, 4);
-					if (magic != PROBE_MAGIC) {
-						p->rx_alien++;
-						continue;
-					}
-					if (p->seen) {
-						if (rseq >= (uint32_t)p->count) {
-							p->rx_alien++;
-							continue;
-						}
-						if (p->seen[rseq >> 3] &
-						    (uint8_t)(1u << (rseq & 7u))) {
-							p->rx_dup++;
-							continue;
-						}
-						p->seen[rseq >> 3] |=
-							(uint8_t)(1u << (rseq & 7u));
-					}
-					if (p->recv == 0)
-						p->rx_first_ns = now;
-					p->recv++;
-				}
-				p->rx_last_ns = now;
-				got_any = 1;
-				if (got < PERF_BATCH)
-					break;
-			}
-		}
-		if (S->tx_all_done) {
-			if (got_any || quiet_deadline == 0)
-				quiet_deadline = now_mono_ns() + 300000000ull;
-			if (now_mono_ns() >= quiet_deadline)
-				break;
-		}
-	}
-	for (i = 0; i < S->npairs; i++)
-		if (S->ctx[i].rx_fd >= 0)
-			close(S->ctx[i].rx_fd);
-	close(ep);
-	S->rx_done = 1;
-	return NULL;
-}
-
-/* Performance live view: one line per pair plus an aggregate. Returns the line
- * count; *hash changes only when the shown rates change. lost/loss% are '-'
- * live (recv lags sent by frames still in flight; valid only after the drain). */
-static int live_perf_draw(struct perf_ctx *ctx, int npairs, double el,
-			  unsigned int *hash)
-{
-	uint64_t a_sent = 0, a_recv = 0;
-	double a_tx = 0, a_rx = 0;
-	unsigned int h = 0;
-	int lines = 3, i;
-
-	printf("  performance (live)  elapsed %6.1fs  refresh 1-5s  Ctrl-C to stop" LIVE_EOL,
-	       el);
-	printf("  pair        sent      recv    lost    loss%%     TX fps    RX fps" LIVE_EOL);
-	printf("  ------------------------------------------------------------------" LIVE_EOL);
-	for (i = 0; i < npairs; i++) {
-		struct perf_ctx *p = &ctx[i];
-		uint64_t now = now_mono_ns();
-		double txd = p->tx_start_ns ?
-			(double)(now - p->tx_start_ns) / 1e9 : 0.0;
-		double rxd = (p->rx_last_ns > p->rx_first_ns) ?
-			(double)(p->rx_last_ns - p->rx_first_ns) / 1e9 : 0.0;
-		double txf = txd > 0 ? (double)p->sent / txd : 0.0;
-		double rxf = rxd > 0 ? (double)p->recv / rxd : 0.0;
-
-		printf("  %d->%-4d %9llu %9llu %7s  %7s  %9.0f %9.0f" LIVE_EOL,
-		       p->tx_ch, p->rx_ch, (unsigned long long)p->sent,
-		       (unsigned long long)p->recv, "-", "-", txf, rxf);
-		lines++;
-		a_sent += p->sent;
-		a_recv += p->recv;
-		a_tx += txf;
-		a_rx += rxf;
-		h = h * 131u + (unsigned int)(txf / 100) +
-		    (unsigned int)(rxf / 100) * 7u;
-	}
-	if (npairs > 1) {
-		printf("  ------------------------------------------------------------------" LIVE_EOL);
-		printf("  agg     %9llu %9llu %7s  %7s  %9.0f %9.0f" LIVE_EOL,
-		       (unsigned long long)a_sent, (unsigned long long)a_recv,
-		       "-", "-", a_tx, a_rx);
-		lines += 2;
-	}
-	fflush(stdout);
-	*hash = h;
-	return lines;
-}
-
-/* Orchestrate a performance run: one TX + one RX epoll thread over all pairs. */
-static int perf_run(const struct opts *o, struct pair_ctx *pairs, int npairs)
-{
-	static struct perf_ctx ctx[MAX_PAIRS];
-	struct perf_set S = { .ctx = ctx, .npairs = npairs, .o = o };
-	long count = (o->count > 0) ? o->count : 10000;
-	uint64_t agg_sent = 0, agg_recv = 0, agg_lost = 0;
-	double agg_tx_fps = 0, agg_rx_fps = 0;
-	pthread_t tx_t, rx_t;
-	int i, rc = 0;
-
-	for (i = 0; i < npairs; i++) {
-		memset(&ctx[i], 0, sizeof(ctx[i]));
-		ctx[i].tx_ch = pairs[i].tx_ch;
-		ctx[i].rx_ch = pairs[i].rx_ch;
-		ctx[i].o = o;
-		ctx[i].count = count;
-		ctx[i].tx_fd = -1;
-		ctx[i].rx_fd = -1;
-		/* exact-loss bitmap for a count-bound run; a duration run has
-		 * unbounded seq, so it counts (loss = sent - recv) */
-		if (!o->duration_s) {
-			ctx[i].seen = calloc((size_t)((count + 7) / 8), 1);
-			if (!ctx[i].seen) {
-				fprintf(stderr,
-					"error: out of memory for %ld-frame bitmap\n",
-					count);
-				while (--i >= 0)
-					free(ctx[i].seen);
-				return 1;
-			}
-		}
-	}
-
-	if (o->duration_s)
-		printf("performance: %d pair(s)  gap=%dus  size=%dB %s  duration=%lds%s\n",
-		       npairs, o->gap_us, o->size,
-		       o->size > 8 ? "FD+BRS" : "classic", o->duration_s,
-		       (o->gap_us <= 1) ? "  [blast: sendmmsg/recvmmsg x64]" : "");
-	else
-		printf("performance: %d pair(s)  gap=%dus  size=%dB %s  count=%ld/pair%s\n",
-		       npairs, o->gap_us, o->size,
-		       o->size > 8 ? "FD+BRS" : "classic", count,
-		       (o->gap_us <= 1) ? "  [blast: sendmmsg/recvmmsg x64]" : "");
-	printf("  one TX + one RX epoll thread over all channels (no per-pair threads)\n\n");
-
-	if (pthread_create(&rx_t, NULL, perf_rx_thread, &S) != 0) {
-		perror("pthread_create rx");
-		rc = 1;
-		goto cleanup;
-	}
-	usleep(50000); /* let the RX sockets bind before the flood */
-	if (pthread_create(&tx_t, NULL, perf_tx_thread, &S) != 0) {
-		perror("pthread_create tx");
-		stop_flag = 1;
-		pthread_join(rx_t, NULL);
-		rc = 1;
-		goto cleanup;
-	}
-
-	if (g_live) {
-		uint64_t start = now_mono_ns(), last_render = 0;
-		double interval = 1.0;
-		unsigned int last_hash = 0;
-		int prev_lines = 0, first = 1;
-
-		for (;;) {
-			uint64_t now = now_mono_ns();
-			int done = (S.tx_all_done && S.rx_done);
-
-			if (first || (now - last_render) >=
-			    (uint64_t)(interval * 1e9)) {
-				unsigned int h;
-
-				live_cursor_up(prev_lines);
-				prev_lines = live_perf_draw(ctx, npairs,
-					(double)(now - start) / 1e9, &h);
-				interval = (!first && h == last_hash) ? 5.0 : 1.0;
-				last_hash = h;
-				last_render = now;
-				first = 0;
-			}
-			if (done)
-				break;
-			usleep(200000);
-		}
-		printf("\n"); /* leave the dashboard; final table follows */
-	}
-
-	pthread_join(tx_t, NULL);
-	pthread_join(rx_t, NULL);
-
-	printf("  pair        sent      recv    lost    loss%%     TX fps    RX fps\n");
-	printf("  ------------------------------------------------------------------\n");
-	for (i = 0; i < npairs; i++) {
-		double tx_dur = (ctx[i].tx_end_ns > ctx[i].tx_start_ns) ?
-			(double)(ctx[i].tx_end_ns - ctx[i].tx_start_ns) / 1e9 : 0.0;
-		double rx_dur = (ctx[i].rx_last_ns > ctx[i].rx_first_ns) ?
-			(double)(ctx[i].rx_last_ns - ctx[i].rx_first_ns) / 1e9 : 0.0;
-		uint64_t lost = (ctx[i].sent > ctx[i].recv) ?
-			ctx[i].sent - ctx[i].recv : 0;
-		double txf = tx_dur > 0 ? (double)ctx[i].sent / tx_dur : 0.0;
-		double rxf = rx_dur > 0 ? (double)ctx[i].recv / rx_dur : 0.0;
-
-		printf("  %d->%-4d %9llu %9llu %7llu  %6.3f%%  %9.0f %9.0f%s\n",
-		       ctx[i].tx_ch, ctx[i].rx_ch,
-		       (unsigned long long)ctx[i].sent, (unsigned long long)ctx[i].recv,
-		       (unsigned long long)lost,
-		       ctx[i].sent ? 100.0 * (double)lost / (double)ctx[i].sent : 0.0,
-		       txf, rxf, ctx[i].tx_err ? "  TX-ERR" : "");
-		agg_sent += ctx[i].sent;
-		agg_recv += ctx[i].recv;
-		agg_lost += lost;
-		agg_tx_fps += txf;
-		agg_rx_fps += rxf;
-	}
-	if (npairs > 1) {
-		printf("  ------------------------------------------------------------------\n");
-		printf("  agg     %9llu %9llu %7llu  %6.3f%%  %9.0f %9.0f\n",
-		       (unsigned long long)agg_sent, (unsigned long long)agg_recv,
-		       (unsigned long long)agg_lost,
-		       agg_sent ? 100.0 * (double)agg_lost / (double)agg_sent : 0.0,
-		       agg_tx_fps, agg_rx_fps);
-	}
-cleanup:
-	for (i = 0; i < npairs; i++)
-		free(ctx[i].seen);
-	return rc;
 }
 
 static void usage(void)
 {
 	printf(
-"canperf - E2CF gateway segmented latency measurement\n"
-"            (app-to-app across Linux -> eth -> MCXE31B -> CAN bus -> back)\n"
+"canperf - E2CF CAN FD delivery test tool\n"
 "\n"
-"  ./canperf                 configure channels (1M/8M FD) and measure the\n"
-"                              default pairs 0->4, 1->2, 3->5 CONCURRENTLY\n"
-"  ./canperf --pair 0:4      measure selected pair(s); repeatable or\n"
-"                              comma-separated: --pair 0:4,1:2,3:5\n"
-"    --count N      frames per pair (default 5000; 0 = unbounded)\n"
-"    --duration T   run for a time instead of a frame count: bare seconds or\n"
-"                     a suffix - 100s, 2m, 1h (perf: keeps sending the whole time)\n"
-"    --gap-us N     inter-frame pacing (default 1000 us)\n"
-"    --size 64|8    64 = CAN FD + BRS (default), 8 = classical\n"
-"    --bitrate R    arbitration bitrate, k/M suffix ok (default 1M)\n"
-"    --dbitrate R   data bitrate; 0 = classical CAN (default 8M)\n"
-"    --report-s N   progress report period (default 10 s)\n"
-"    --window N     probes in flight per pair (default 1 = lockstep\n"
-"                     latency probing; 2..16 = throughput/loss testing,\n"
-"                     --gap-us then sets the OFFERED rate of 1e6/gap fps)\n"
-"    --bidir        mirror every pair: A->B adds B->A (full-duplex load)\n"
-"    --sweep        max-sustainable-rate search (windowed engine): ladder\n"
-"                     then binary-search the highest rate with zero loss\n"
-"                     and p99 <= --p99-limit; prints MSR vs bus theory\n"
-"    --sweep-frames N  probes per pair per sweep step (default 20000)\n"
-"    --p99-limit N  sweep pass criterion in us (default 1000)\n"
-"    --performance  one-way throughput+loss test: two threads (TX flood on\n"
-"                     --pair x, RX count on y), no round trip, no latency;\n"
-"                     reports offered/delivered FPS and loss (default 10000)\n"
-"    --loopback     controller loopback (FlexCAN LPB, no bus/transceiver):\n"
-"                     use same-channel pairs --pair 0:0,1:1,2:2 (default off)\n"
-"    --no-setup     do not touch channel configuration\n"
-"    --csv          dump per-frame timestamps to pair-A-B.csv\n"
+"Usage:\n"
+"  canperf latency            latency test on default pairs 0->4,1->2,3->5\n"
+"  canperf bandwidth          bidirectional max sustainable bandwidth test\n"
+"  canperf                    same as: canperf latency\n"
+"\n"
+"default CAN FD rate: 1M/5M (bitrate 1000000, dbitrate 5000000)\n"
+"\n"
+"Options:\n"
+"  --pair A:B      test one pair; repeat or comma-separate pairs\n"
+"  --count N       frames per pair for latency (default 5000; 0 = unbounded)\n"
+"  --duration T    run for a time instead of a frame count: 100s, 2m, 1h\n"
+"  --bitrate R     arbitration bitrate, k/M suffix ok (default 1M)\n"
+"  --dbitrate R    CAN FD data bitrate, k/M suffix ok (default 5M)\n"
+"  --no-setup      do not configure eth2can interfaces\n"
+"  -h, --help      show this help\n"
 "\n"
 "examples:\n"
-"  ./canperf --count 10000             10000 frames per pair, all pairs\n"
-"  ./canperf --gap-us 500              one probe every 500 us\n"
-"  ./canperf --pair 0:4 --count 20000 --gap-us 200 --csv\n"
-"  ./canperf --window 16 --gap-us 125 --count 100000   8000 fps load test\n"
-"  ./canperf --performance --pair 0:4 --gap-us 1   one-way TX flood, FPS+loss\n"
-"  ./canperf --performance --pair 0:4,1:2,3:5      3 pairs concurrently\n"
-"  ./canperf --loopback --pair 0:0,1:1,2:2         controller loopback (no bus)\n"
-"  ./canperf --sweep                   find the max sustainable rate\n"
-"  ./canperf --sweep --bidir --size 8  classical frames, full duplex\n"
-"  ./canperf --bitrate 500k --dbitrate 2M\n"
-"  ./canperf --duration 3600 --report-s 60     one-hour soak\n"
+"  ./canperf latency --count 10000\n"
+"  ./canperf latency --pair 0:4 --duration 10m\n"
+"  ./canperf bandwidth\n"
+"  ./canperf bandwidth --pair 0:4\n"
+"  ./canperf --bitrate 1M --dbitrate 5M\n"
 "\n"
 "timestamps: T0 app send / T1 bus TX complete / T2 remote MCU capture /\n"
 "            T3 Linux net stack / T4 app recv\n"
-"segments:   A=T1-T0 tx path  B=T2-T1 mcu capture  C=T3-T2 uplink\n"
-"            D=T4-T3 rx wakeup; total and B/D carry no clock-mapping error\n"
-"            (the full path diagram is printed at the start of every run)\n");
+"segments:   total, L1 Linux TX, L2 Ethernet wire, L3 MCU/CAN, L4 Linux RX\n");
 }
 
 int main(int argc, char **argv)
 {
 	static const struct option long_opts[] = {
 		{ "pair",     1, 0, 'p' }, { "count",    1, 0, 'c' },
-		{ "duration", 1, 0, 'D' }, { "gap-us",   1, 0, 'g' },
-		{ "size",     1, 0, 's' }, { "report-s", 1, 0, 'r' },
+		{ "duration", 1, 0, 'D' },
 		{ "bitrate",  1, 0, 'b' }, { "dbitrate", 1, 0, 'B' },
-		{ "window",   1, 0, 'w' }, { "bidir",    0, 0, 'i' },
-		{ "sweep",    0, 0, 'S' }, { "sweep-frames", 1, 0, 'F' },
-		{ "p99-limit", 1, 0, 'L' }, { "performance", 0, 0, 'P' },
-		{ "loopback", 0, 0, 'l' },
-		{ "no-setup", 0, 0, 'n' }, { "csv",      0, 0, 'v' },
+		{ "no-setup", 0, 0, 'n' },
 		{ "help",     0, 0, 'h' }, { 0, 0, 0, 0 },
 	};
 	struct opts opts = {
 		.count = 5000, .gap_us = 1000, .size = 64, .report_s = 10,
 		.window = 1, .sweep_frames = 20000, .p99_limit_us = 1000,
-		.setup = true, .bitrate = 1000000, .dbitrate = 8000000,
+		.setup = true, .bitrate = 1000000, .dbitrate = 5000000,
 	};
 	struct cnt_snap snap0, snap1;
 	static struct pair_ctx pairs[MAX_PAIRS];
 	int npairs = 0;
 	int c, ret = 0;
-	bool count_set = false;
+	enum { MODE_LATENCY, MODE_BANDWIDTH } mode = MODE_LATENCY;
+	bool count_set = false, duration_set = false;
+
+	if (argc > 1 && strcmp(argv[1], "latency") == 0) {
+		mode = MODE_LATENCY;
+		argc--;
+		argv++;
+	} else if (argc > 1 && strcmp(argv[1], "bandwidth") == 0) {
+		mode = MODE_BANDWIDTH;
+		argc--;
+		argv++;
+	} else if (argc > 1 && argv[1][0] != '-') {
+		fprintf(stderr, "error: unknown test '%s'\n", argv[1]);
+		usage();
+		return 1;
+	}
 
 	while ((c = getopt_long(argc, argv, "h", long_opts, NULL)) != -1) {
 		switch (c) {
@@ -2114,39 +1564,29 @@ int main(int argc, char **argv)
 					optarg);
 				return 1;
 			}
+			duration_set = true;
 			break;
-		case 'g': opts.gap_us = atoi(optarg); break;
-		case 's': opts.size = atoi(optarg); break;
-		case 'r': opts.report_s = atoi(optarg) > 0 ? atoi(optarg) : 10; break;
 		case 'b': opts.bitrate = parse_rate(optarg); break;
 		case 'B': opts.dbitrate = parse_rate(optarg); break;
-		case 'w': opts.window = (unsigned int)atoi(optarg); break;
-		case 'i': opts.bidir = true; break;
-		case 'S': opts.sweep = true; break;
-		case 'F': opts.sweep_frames = atol(optarg); break;
-		case 'L': opts.p99_limit_us = atoi(optarg); break;
-		case 'P': opts.performance = true; break;
-		case 'l': opts.loopback = true; break;
 		case 'n': opts.setup = false; break;
-		case 'v': opts.csv = true; break;
 		case 'h': usage(); return 0;
 		default: usage(); return 1;
 		}
 	}
-	if (opts.size == 64 && !opts.dbitrate) {
+	if (opts.dbitrate <= opts.bitrate) {
 		fprintf(stderr,
-			"error: --dbitrate 0 (classical CAN) requires --size 8\n");
+			"error: data bitrate must be higher than nominal bitrate for CAN FD BRS tests\n");
 		return 1;
 	}
 	if (!opts.window || opts.window > MAX_WINDOW) {
 		fprintf(stderr,
-			"error: --window must be 1..%d (the driver's per-channel\n"
+			"error: internal window must be 1..%d (the driver's per-channel\n"
 			"  TXC window is %d slots deep - more cannot be in flight)\n",
 			MAX_WINDOW, MAX_WINDOW);
 		return 1;
 	}
 	if (!opts.bitrate || opts.bitrate > 1000000 ||
-	    (opts.dbitrate && opts.dbitrate > 8000000)) {
+	    opts.dbitrate > 8000000) {
 		fprintf(stderr,
 "error: bitrate out of range (got %u/%u)\n"
 "  gateway device limit: the CAN controllers sit on the MCXE31B, whose\n"
@@ -2169,10 +1609,19 @@ int main(int argc, char **argv)
 				size_ok = true;
 		if (!size_ok) {
 			fprintf(stderr,
-				"error: --size must be one of 8,12,16,20,24,32,48,64\n"
+				"error: internal CAN FD size must be one of 8,12,16,20,24,32,48,64\n"
 				"  (CAN FD DLC lengths; probe payload needs >= 8 bytes)\n");
 			return 1;
 		}
+	}
+	if (mode == MODE_BANDWIDTH) {
+		opts.bidir = true;
+		opts.sweep = true;
+		opts.window = MAX_WINDOW;
+		if (count_set && opts.count > 0)
+			opts.sweep_frames = opts.count;
+		if (duration_set)
+			opts.count = 0;
 	}
 	if (opts.sweep) {
 		if (opts.window == 1)
@@ -2180,18 +1629,8 @@ int main(int argc, char **argv)
 		if (opts.sweep_frames < 1000)
 			opts.sweep_frames = 1000;
 	}
-	if (opts.duration_s)
+	if (opts.duration_s && mode == MODE_LATENCY)
 		opts.count = 0; /* duration-bound run */
-	if (opts.performance) {
-		/* one pair, two threads; default 0:4, default 10000 frames */
-		if (!count_set && !opts.duration_s)
-			opts.count = 10000;
-		if (!npairs) {
-			pairs[0].tx_ch = 0;
-			pairs[0].rx_ch = 4;
-			npairs = 1;
-		}
-	}
 	if (!npairs) {
 		/* the three wired buses; --bidir mirrors them below */
 		for (npairs = 0; npairs < MAX_PAIRS / 2; npairs++) {
@@ -2219,21 +1658,13 @@ int main(int argc, char **argv)
 				return 1;
 			}
 
-	/* same-channel pairs (x:x) only work in controller loopback; a wired
-	 * x:y pair is broken by loopback (each channel loops to itself) */
 	for (int i = 0; i < npairs; i++) {
-		if (pairs[i].tx_ch == pairs[i].rx_ch && !opts.loopback) {
+		if (pairs[i].tx_ch == pairs[i].rx_ch) {
 			fprintf(stderr,
-				"error: pair %d:%d is same-channel - add --loopback "
-				"(controller LPB self-test)\n",
+				"error: pair %d:%d is same-channel; delivery tests require a wired peer\n",
 				pairs[i].tx_ch, pairs[i].rx_ch);
 			return 1;
 		}
-		if (pairs[i].tx_ch != pairs[i].rx_ch && opts.loopback)
-			fprintf(stderr,
-				"warning: --loopback with wired pair %d:%d - each "
-				"channel loops to itself, they will not reach each other\n",
-				pairs[i].tx_ch, pairs[i].rx_ch);
 	}
 
 	/* live in-place dashboard only when stdout is a real terminal; a pipe or
@@ -2250,7 +1681,7 @@ int main(int argc, char **argv)
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 	{
 		long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-		int threads = opts.performance ? 2 : npairs;
+		int threads = npairs;
 		struct sched_param sp = { .sched_priority = 50 };
 
 		if (sched_setscheduler(0, SCHED_FIFO, &sp))
@@ -2270,15 +1701,14 @@ int main(int argc, char **argv)
 			perror("netlink");
 			return 1;
 		}
-		printf("configuring channels (%u/%u%s%s) ...\n", opts.bitrate,
-		       opts.dbitrate, opts.dbitrate ? " FD" : " classical",
-		       opts.loopback ? " loopback" : "");
+		printf("configuring channels (%u/%u FD) ...\n", opts.bitrate,
+		       opts.dbitrate);
 		for (int i = 0; i < npairs; i++)
 			for (int k = 0; k < 2; k++) {
 				int ch = k ? pairs[i].rx_ch : pairs[i].tx_ch;
 
 				if (chan_setup(nlfd, ch, opts.bitrate,
-					       opts.dbitrate, opts.loopback))
+					       opts.dbitrate))
 					fprintf(stderr,
 						"warning: eth2can%d setup failed (gateway alive?)\n",
 						ch);
@@ -2288,14 +1718,6 @@ int main(int argc, char **argv)
 		 * (the hardware timestamps depend on it) */
 		printf("waiting for the gateway time anchor (TIME, 1 Hz) ...\n");
 		sleep(2);
-	}
-
-	if (opts.performance) {
-		counters_snapshot(&snap0);
-		ret = perf_run(&opts, pairs, npairs);
-		counters_snapshot(&snap1);
-		counters_delta(&snap0, &snap1);
-		return stop_flag ? 130 : ret;
 	}
 
 	print_banner(&opts, npairs);

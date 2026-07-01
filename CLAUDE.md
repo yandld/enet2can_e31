@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 E2CF gateway: an i.MX95 (Real-Time Edge Linux) talks to an NXP MCXE31B MCU over raw L2
-Ethernet (EtherType 0x88B5, no IP/UDP), and the MCU bridges 6× CANFD channels (1M/8M BRS).
+Ethernet (EtherType 0x88B5, no IP/UDP), and the MCU bridges 6× CANFD channels (1M/5M BRS).
 Three parts, all in this repo:
 
 - **Root** — MCU firmware (bare-metal Cortex-M7 superloop, no RTOS/lwIP). Project logic in
@@ -76,7 +76,7 @@ cd tools/imx95
 ./build_driver.sh                  # cross-compile eth2can.ko (auto-prepares if needed)
 ./build_driver.sh host             # build against host kernel — quick API/syntax check
 ./build_kernel.sh                  # full kernel: Image + dtbs + modules
-BOARD_IP=x.x.x.x ./deploy.sh drv eth1   # scp + insmod + bring up 6 channels 1M/8M
+BOARD_IP=x.x.x.x ./deploy.sh drv eth1   # scp + insmod + bring up 6 channels 1M/5M
 BOARD_IP=x.x.x.x ./deploy.sh kernel     # scp Image + imx95 dtb to board boot partition
 ./make_bundle.sh                   # minimal tgz: Image+ko+scripts (CAN/ENETC/MMC are =y;
                                    #   `full` arg adds dtbs+modules for first flash)
@@ -88,7 +88,7 @@ mismatch. Driver must keep building on both 5.15 (host check) and 6.9+/6.18 (tar
 the `KERNEL_VERSION(6,9,0)` ifdefs around `can.fd.data_bittiming` vs `can.data_bittiming`.
 
 On-board usage: `insmod eth2can.ko ifname=eth0 [vid=100] [peer=...]`, then standard iproute2
-(`ip link set eth2can0 type can bitrate 1000000 dbitrate 8000000 fd on`). `vid=-1` (untagged) is
+(`ip link set eth2can0 type can bitrate 1000000 dbitrate 5000000 fd on`). `vid=-1` (untagged) is
 the bring-up default; the spec requires 802.1Q (VID 100, PCP 6 data / PCP 2 CFG) in deployment.
 
 ## Architecture

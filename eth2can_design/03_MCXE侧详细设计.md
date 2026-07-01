@@ -95,7 +95,7 @@
 2. `CLOCK_AttachClk(kAIPS_PLAT_CLK_to_FLEXCAN012_PE)` + `..._FLEXCAN345_PE`(分频 ÷1)。
 3. EMAC:RMII 50 MHz 参考时钟,PHY(LAN8741/自制板同级)自协商 100M 全双工。(EMAC 1588 时基为 Phase-2;v1 网关时钟用 Cortex-M7 DWT 周期计数器,见 §3.6。)
 4. 网关时钟(v1):Cortex-M7 **DWT 周期计数器 @160 MHz**(6.25 ns/tick),经 1 ms SysTick 扩展为 64 位单调钟,作为 `ts_base` 与 T_agg/节拍定时源(`gw_time.c`)。STM@80 MHz 对齐 EMAC 1588 为 Phase-2 目标(同一 `gw_time` API 后端替换)。
-5. 各 FlexCAN:`FLEXCAN_FDInit`(默认 1M/8M,等 Linux 侧 CFG 覆写);**冻结模式等待 START** —— 上电不自动上总线(协议 §4.8 安全语义)。
+5. 各 FlexCAN:`FLEXCAN_FDInit`(默认 1M/5M,等 Linux 侧 CFG 覆写);**冻结模式等待 START** —— 上电不自动上总线(协议 §4.8 安全语义)。
 6. EMAC 描述符环:ring0 = 数据面(RX 16 描述符 ×1536B,TX 64 描述符 —— 8→64 治 TX ring wrap 异常);ring1 预留管理面,v1 关闭。MAC 过滤:单播本机 MAC + 组播 `01:E2:CF:00:00:01`(仅 HB);VLAN tag 不剥离(软件解析 PCP/VID)。
 
 ### 3.2 中断优先级表(NVIC,数值越小越高)

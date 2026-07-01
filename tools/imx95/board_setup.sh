@@ -63,7 +63,7 @@ done
 
 ok=0
 for i in 0 1 2 3 4 5; do
-    if ip link set "eth2can$i" type can bitrate 1000000 dbitrate 8000000 fd on 2>/dev/null &&
+    if ip link set "eth2can$i" type can bitrate 1000000 dbitrate 5000000 fd on 2>/dev/null &&
        ip link set "eth2can$i" up 2>/dev/null; then
         ok=$((ok + 1))
     fi

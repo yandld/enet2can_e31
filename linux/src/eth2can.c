@@ -23,7 +23,7 @@
  *
  * Usage:
  *   insmod eth2can.ko ifname=eth0 [vid=100] [peer=aa:bb:cc:dd:ee:ff]
- *   ip link set eth2can0 type can bitrate 1000000 dbitrate 8000000 fd on
+ *   ip link set eth2can0 type can bitrate 1000000 dbitrate 5000000 fd on
  *   ip link set eth2can0 up
  */
 #include <linux/bitops.h>

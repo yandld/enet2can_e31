@@ -21,7 +21,7 @@
 /*
  * Protocol §4.8: channels stay in STOP until the Linux side sends CFG START.
  * For standalone bench bring-up (no Linux peer yet) set 1: all channels are
- * configured 1M/8M BRS and STARTed at boot, and the safe-state TX gate is
+ * configured 1M/5M BRS and STARTed at boot, and the safe-state TX gate is
  * not enforced until the first HB is ever received.
  */
 #ifndef E2CF_AUTOSTART_CHANNELS
@@ -42,7 +42,7 @@
 
 /* Default bitrates for autostart (CFG SET_BITRATE overrides at runtime). */
 #define E2CF_DEFAULT_NOM_BITRATE 1000000U
-#define E2CF_DEFAULT_DAT_BITRATE 8000000U
+#define E2CF_DEFAULT_DAT_BITRATE 5000000U
 
 /* ---- CAN resource plan (design doc 03 §3.3) --------------------------- */
 /* All six instances use the same RX MB bank + single TX MB scheme. CAN0's
