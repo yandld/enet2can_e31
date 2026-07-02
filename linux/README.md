@@ -50,6 +50,8 @@ sudo ip link set eth2can0 type can bitrate 1000000 dbitrate 5000000 fd on
 sudo ip link set eth2can0 up
 ```
 
+基础收发前，确认每组 CAN FD 总线两端各 120Ω 终端，CANH/CANL 未接反，收发器供电正常并与网关共地。
+
 基础收发：
 
 ```sh
@@ -70,11 +72,11 @@ eth2can3 <-> eth2can5
 ```sh
 cd linux/can_testcase
 make
-./canperf latency
+./canperf latency --count 10000
 ./canperf bandwidth
 ```
 
-`latency` 输出端到端延迟和分段 p50/p99；`bandwidth` 输出双向最大可持续速率 MSR。客户验收建议保存完整终端输出，重点看 zero-loss、p50/p99、MSR 和 counters delta。
+客户验收先看最后的 `RESULT` 行：`latency` 给出端到端 p50/p99/p99.9，`bandwidth` 给出双向最大可持续速率 MSR。MSR 是 maximum sustainable rate；zero-loss 表示应用层无丢帧且可读取 counters 为 clean；p99.9 即 p999。`EVIDENCE` 行用于保存复验证据。当前文档不固定 p99 或 MSR 硬阈值。
 
 ## 故障排查
 
@@ -85,7 +87,18 @@ make
 | 没有 `eth2can0..5` | 查 `dmesg` 中 insmod 错误，确认 SocketCAN 内核配置 |
 | `gateway heartbeat was not observed` | 检查网线、选中的 `--ifname`、MCXE31B 固件和交换机/VLAN |
 | `ip link set eth2canN ...` 超时 | heartbeat 未建立或网关未响应 CFG |
-| CAN 收不到帧 | 检查默认线束、终端电阻、收发器供电、CANH/CANL 极性 |
+| CAN 收不到帧 | 检查默认线束、两端 120Ω 终端、收发器供电、共地、CANH/CANL 极性 |
+
+板载状态灯可辅助判断链路阶段：
+
+| LED | 状态 | 检查方向 |
+|---|---|---|
+| SYS | 约 1 Hz 闪烁 | 固件主循环正常运行；若不闪烁，先检查固件烧录、电源和复位 |
+| NET | 熄灭 | PHY link down，检查网线、交换机和 Linux 网口是否 up |
+| NET | 闪烁 | PHY link up，但 E2CF peer heartbeat 未 ready；检查 `--ifname`、VLAN、驱动是否已加载、抓包是否有 EtherType `0x88b5` |
+| NET | 常亮 | Ethernet/E2CF 链路 ready，可以继续配置 `eth2can0..5` 和跑 canperf |
+| CAN | 闪烁 | 有 CAN RX/TX 流量，基础收发或 canperf 正在通过网关 |
+| CAN | 常亮 | 至少一路 active CAN error-passive/bus-off；检查终端、电平、CANH/CANL、速率和收发器供电 |
 
 heartbeat 抓包：
 

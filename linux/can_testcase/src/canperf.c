@@ -486,6 +486,21 @@ static void hist_add(struct hist *h, int64_t ns)
 		h->max_ns = (uint64_t)ns;
 }
 
+static void hist_merge(struct hist *dst, const struct hist *src)
+{
+	for (int i = 0; i < HIST_FINE; i++)
+		dst->fine[i] += src->fine[i];
+	for (int i = 0; i < HIST_LOG2; i++)
+		dst->coarse[i] += src->coarse[i];
+	if (src->count && (!dst->count || src->min_ns < dst->min_ns))
+		dst->min_ns = src->min_ns;
+	if (src->max_ns > dst->max_ns)
+		dst->max_ns = src->max_ns;
+	dst->count += src->count;
+	dst->clamped += src->clamped;
+	dst->sum_ns += src->sum_ns;
+}
+
 /* Interpolated percentile in microseconds (p in 0..100). */
 static double hist_pct(const struct hist *h, double p)
 {
@@ -540,7 +555,6 @@ struct opts {
 	bool bidir;		/* mirror every pair (A:B adds B:A) */
 	bool sweep;		/* max-sustainable-rate search */
 	long sweep_frames;	/* probes per pair per sweep step */
-	int p99_limit_us;	/* sweep pass criterion on total p99 */
 	unsigned int bitrate, dbitrate;
 };
 
@@ -1041,26 +1055,27 @@ static void summary_table(struct pair_ctx *pairs, int npairs)
 	 * the same %-field widths so labels sit over their data. */
 	printf("\n"
 "+- summary (us) -------------------------------------------------------------------+\n"
-"| %-13s | %7s | %4s | %17s | %6s %6s %6s %6s |\n"
-"+---------------+---------+------+-------------------+-----------------------------+\n",
-	       "pair", "frames", "lost", "p50 / p99 / max",
+"| %-13s | %7s | %4s | %25s | %6s %6s %6s %6s |\n"
+"+---------------+---------+------+---------------------------+-----------------------------+\n",
+	       "pair", "frames", "lost", "p50 / p99 / p99.9 / max",
 	       "L1p99", "L2p99", "L3p99", "L4p99");
 	for (int i = 0; i < npairs; i++) {
 		struct pair_ctx *pc = &pairs[i];
-		char pr[16], ppm[24];
+		char pr[16], ppm[32];
 
 		snprintf(pr, sizeof(pr), "eth2can%d > %d", pc->tx_ch, pc->rx_ch);
-		snprintf(ppm, sizeof(ppm), "%.0f / %.0f / %.0f",
+		snprintf(ppm, sizeof(ppm), "%.0f / %.0f / %.0f / %.0f",
 			 hist_pct(&pc->h_total, 50), hist_pct(&pc->h_total, 99),
+			 hist_pct(&pc->h_total, 99.9),
 			 (double)pc->h_total.max_ns / 1000.0);
-		printf("| %-13s | %7llu | %4llu | %17s | %6.0f %6.0f %6.0f %6.0f |\n",
+		printf("| %-13s | %7llu | %4llu | %25s | %6.0f %6.0f %6.0f %6.0f |\n",
 		       pr, (unsigned long long)pc->sent,
 		       (unsigned long long)pc->lost, ppm,
 		       hist_pct(&pc->h_l1, 99), hist_pct(&pc->h_l2, 99),
 		       hist_pct(&pc->h_l3, 99), hist_pct(&pc->h_l4, 99));
 	}
 	printf(
-"+---------------+---------+------+-------------------+-----------------------------+\n");
+"+---------------+---------+------+---------------------------+-----------------------------+\n");
 }
 
 /* ======================================================================== */
@@ -1081,6 +1096,24 @@ struct cnt_snap {
 	uint64_t gw_emac_drop, gw_emac_err;	/* MCU EMAC RX-ring drops/errors */
 	uint64_t rej_ctrl, rej_stopped, rej_ovf; /* non-OK TXC by reason */
 };
+
+enum counter_state {
+	COUNTERS_UNAVAILABLE,
+	COUNTERS_CLEAN,
+	COUNTERS_DIRTY,
+};
+
+static const char *counter_state_name(enum counter_state state)
+{
+	switch (state) {
+	case COUNTERS_CLEAN:
+		return "clean";
+	case COUNTERS_DIRTY:
+		return "dirty";
+	default:
+		return "unavailable";
+	}
+}
 
 /* Return the unsigned number right after `key` in `s`, 0 when absent. */
 static uint64_t find_u64(const char *s, const char *key)
@@ -1137,50 +1170,50 @@ static void counters_snapshot(struct cnt_snap *s)
 	s->ok = true;
 }
 
-/* Print the counter movement across the run. */
-static void counters_delta(const struct cnt_snap *a, const struct cnt_snap *b)
+static enum counter_state counters_state(const struct cnt_snap *a,
+					 const struct cnt_snap *b)
 {
+#define DELTA(f) (b->f - a->f)
+	if (!a->ok || !b->ok)
+		return COUNTERS_UNAVAILABLE;
+	if (DELTA(drv_lost) || DELTA(drv_nomem) || DELTA(drv_trunc) ||
+	    DELTA(gw_lost) || DELTA(gw_rej) || DELTA(gw_starv) ||
+	    DELTA(gw_sfail) || DELTA(gw_ovf) || DELTA(gw_emac_drop) ||
+	    DELTA(gw_emac_err))
+		return COUNTERS_DIRTY;
+	return COUNTERS_CLEAN;
+#undef DELTA
+}
+
+/* Print the counter movement across the run. */
+static enum counter_state counters_delta(const struct cnt_snap *a,
+					 const struct cnt_snap *b)
+{
+	enum counter_state state = counters_state(a, b);
+
 	if (!a->ok || !b->ok) {
-		printf("\n(counter delta unavailable: /sys/kernel/debug/eth2can/stats not readable)\n");
-		return;
+		printf("counters: unavailable (/sys/kernel/debug/eth2can/stats not readable)\n");
+		return state;
 	}
 #define DELTA(f) ((unsigned long long)(b->f - a->f))
-	char c1[24], c2[24], c3[24];
-
-	printf("\n+------------------ counters delta (this run) ------------------+\n");
-	snprintf(c1, sizeof(c1), "seq_lost +%llu", DELTA(drv_lost));
-	snprintf(c2, sizeof(c2), "gap-evt +%llu", DELTA(drv_gaps));
-	snprintf(c3, sizeof(c3), "nomem +%llu", DELTA(drv_nomem));
-	printf("| %-4s %-18s %-18s %-18s |\n", "drv", c1, c2, c3);
-	snprintf(c1, sizeof(c1), "trunc +%llu", DELTA(drv_trunc));
-	snprintf(c2, sizeof(c2), "tx_cn +%llu", DELTA(drv_tx_cn));
-	printf("| %-4s %-18s %-18s %-18s |\n", "", c1, c2, "");
-	snprintf(c1, sizeof(c1), "seq_lost +%llu", DELTA(gw_lost));
-	snprintf(c2, sizeof(c2), "rej +%llu", DELTA(gw_rej));
-	snprintf(c3, sizeof(c3), "starv +%llu", DELTA(gw_starv));
-	printf("| %-4s %-18s %-18s %-18s |\n", "gw", c1, c2, c3);
-	snprintf(c1, sizeof(c1), "sfail +%llu", DELTA(gw_sfail));
-	snprintf(c2, sizeof(c2), "txbusy +%llu", DELTA(gw_txbusy));
-	snprintf(c3, sizeof(c3), "rx_ovf +%llu", DELTA(gw_ovf));
-	printf("| %-4s %-18s %-18s %-18s |\n", "", c1, c2, c3);
-	printf("+---------------------------------------------------------------+\n");
-	printf("  uplink +%llu recs in +%llu eth frames  |  loop/s %llu -> %llu\n",
-	       DELTA(gw_up), DELTA(gw_sent),
-	       (unsigned long long)a->gw_loop, (unsigned long long)b->gw_loop);
-	if (DELTA(drv_lost))
-		printf("  ! driver seq_lost  = UPLINK LOSS\n");
-	if (DELTA(gw_lost))
-		/* locate the downlink drop: EMAC rxdrop>0 => MCU EQOS RX ring
-		 * overflow; both 0 => lost upstream on the NIC/switch/wire */
-		printf("  ! downlink seq_lost +%llu : emac_rxdrop +%llu emac_rxerr +%llu"
-		       " (>0 = MCU RX ring; 0 = NIC/switch)\n",
-		       DELTA(gw_lost), DELTA(gw_emac_drop), DELTA(gw_emac_err));
-	if (DELTA(gw_rej))
-		/* locate the submit reject by reason */
-		printf("  ! rej +%llu : chan_stopped +%llu queue_ovf +%llu ctrl_error +%llu\n",
-		       DELTA(gw_rej), DELTA(rej_stopped), DELTA(rej_ovf),
-		       DELTA(rej_ctrl));
+	printf("counters: %s", counter_state_name(state));
+	if (state == COUNTERS_CLEAN) {
+		printf(" (seq_lost/rx_ovf/reject/drop unchanged)\n");
+	} else {
+		printf("\n");
+		printf("  drv: seq_lost +%llu nomem +%llu trunc +%llu tx_cn +%llu\n",
+		       DELTA(drv_lost), DELTA(drv_nomem), DELTA(drv_trunc),
+		       DELTA(drv_tx_cn));
+		printf("  gw: seq_lost +%llu rx_ovf +%llu rej +%llu starv +%llu sfail +%llu emac_rxdrop +%llu\n",
+		       DELTA(gw_lost), DELTA(gw_ovf), DELTA(gw_rej),
+		       DELTA(gw_starv), DELTA(gw_sfail), DELTA(gw_emac_drop));
+		if (DELTA(gw_rej))
+			printf("  reject reason: stopped +%llu queue_ovf +%llu ctrl_error +%llu\n",
+			       DELTA(rej_stopped), DELTA(rej_ovf),
+			       DELTA(rej_ctrl));
+	}
 #undef DELTA
+	return state;
 }
 
 /* ========================================================================
@@ -1198,6 +1231,85 @@ static void pair_reset(struct pair_ctx *pc)
 	pc->sent = pc->lost = pc->echo_miss = pc->no_hw_stamp = 0;
 	pc->late_rx = pc->late_echo = 0;
 	pc->elapsed_ns = 0;
+}
+
+struct run_summary {
+	struct hist total;
+	uint64_t sent;
+	uint64_t lost;
+	uint64_t samples;
+	double worst_p99_us;
+	double worst_p999_us;
+	double delivered_fps_pair;
+};
+
+static struct run_summary summarize_pairs(struct pair_ctx *pairs, int npairs)
+{
+	struct run_summary s;
+
+	memset(&s, 0, sizeof(s));
+	for (int i = 0; i < npairs; i++) {
+		double p99 = hist_pct(&pairs[i].h_total, 99);
+		double p999 = hist_pct(&pairs[i].h_total, 99.9);
+
+		hist_merge(&s.total, &pairs[i].h_total);
+		s.sent += pairs[i].sent;
+		s.lost += pairs[i].lost;
+		s.samples += pairs[i].h_total.count;
+		if (p99 > s.worst_p99_us)
+			s.worst_p99_us = p99;
+		if (p999 > s.worst_p999_us)
+			s.worst_p999_us = p999;
+		if (pairs[i].elapsed_ns)
+			s.delivered_fps_pair +=
+				(double)pairs[i].h_total.count * 1e9 /
+				(double)pairs[i].elapsed_ns;
+	}
+	if (npairs > 0)
+		s.delivered_fps_pair /= npairs;
+	return s;
+}
+
+static bool run_zero_loss(const struct run_summary *s, enum counter_state counters)
+{
+	return s->lost == 0 && counters != COUNTERS_DIRTY;
+}
+
+static void print_latency_evidence(const struct run_summary *s,
+				   enum counter_state counters)
+{
+	bool zero_loss = run_zero_loss(s, counters);
+
+	printf("RESULT latency: %s, zero_loss=%s, samples=%llu, "
+	       "p50/p99/p99.9=%.0f/%.0f/%.0f us, counters=%s\n",
+	       zero_loss ? "PASS" : "FAIL", zero_loss ? "yes" : "no",
+	       (unsigned long long)s->samples, hist_pct(&s->total, 50),
+	       hist_pct(&s->total, 99), hist_pct(&s->total, 99.9),
+	       counter_state_name(counters));
+	printf("EVIDENCE latency zero_loss=%s samples=%llu lost=%llu "
+	       "total_p50_us=%.0f total_p99_us=%.0f total_p999_us=%.0f counters=%s\n",
+	       zero_loss ? "yes" : "no", (unsigned long long)s->samples,
+	       (unsigned long long)s->lost, hist_pct(&s->total, 50),
+	       hist_pct(&s->total, 99), hist_pct(&s->total, 99.9),
+	       counter_state_name(counters));
+}
+
+static void print_bandwidth_evidence(const struct run_summary *s,
+				     enum counter_state counters,
+				     int npairs)
+{
+	bool zero_loss = run_zero_loss(s, counters);
+
+	printf("RESULT bandwidth: %s, zero_loss=%s, MSR=%.0f fps/pair "
+	       "(%.0f fps aggregate), p99/p99.9=%.0f/%.0f us, counters=%s\n",
+	       zero_loss ? "PASS" : "FAIL", zero_loss ? "yes" : "no",
+	       s->delivered_fps_pair, s->delivered_fps_pair * npairs,
+	       s->worst_p99_us, s->worst_p999_us, counter_state_name(counters));
+	printf("EVIDENCE bandwidth zero_loss=%s msr_fps_pair=%.0f "
+	       "aggregate_fps=%.0f p99_us=%.0f p999_us=%.0f counters=%s\n",
+	       zero_loss ? "yes" : "no", s->delivered_fps_pair,
+	       s->delivered_fps_pair * npairs, s->worst_p99_us,
+	       s->worst_p999_us, counter_state_name(counters));
 }
 
 /* --- live TTY dashboard ----------------------------------------------------
@@ -1310,11 +1422,9 @@ static int run_pairs(const struct opts *o, struct pair_ctx *pairs,
 /* ========================================================================
  * Bandwidth: max-sustainable-rate search
  *
- * Windowed engine at a controlled offered rate per step. Ladder up from
- * theory/8 doubling the rate until a step fails (any loss, or the worst
- * pair's total p99 above the internal limit), then binary-search the pass/fail
- * gap down to ~3%. All pairs run concurrently at the same offered rate;
- * the verdict takes the worst pair.
+ * Windowed engine at a controlled offered rate per step. The sweep searches
+ * for the highest zero-loss delivered rate only; latency percentiles are
+ * evidence printed to the report, not hard customer pass/fail thresholds.
  * ======================================================================== */
 static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 {
@@ -1329,21 +1439,20 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 		o->count = o->sweep_frames;
 
 	if (o->duration_s)
-		printf("bandwidth: %d pair(s), window=%u, %lds/step, criterion: lost=0 & p99<=%dus\n",
-		       npairs, o->window, o->duration_s, o->p99_limit_us);
+		printf("bandwidth: %d pair(s), window=%u, %lds/step, sweep criterion: zero loss\n",
+		       npairs, o->window, o->duration_s);
 	else
-		printf("bandwidth: %d pair(s), window=%u, %ld frames/step, criterion: lost=0 & p99<=%dus\n",
-		       npairs, o->window, o->sweep_frames, o->p99_limit_us);
-	printf("+------+------------+-----------+----------+----------+---------+\n"
-	       "| step | offered    | delivered |   lost   |  p99(us) | verdict |\n"
-	       "+------+------------+-----------+----------+----------+---------+\n");
+		printf("bandwidth: %d pair(s), window=%u, %ld frames/step, sweep criterion: zero loss\n",
+		       npairs, o->window, o->sweep_frames);
+	printf("+------+------------+-----------+----------+----------+----------+---------+\n"
+	       "| step | offered    | delivered |   lost   |  p99(us) | p999(us) | verdict |\n"
+	       "+------+------------+-----------+----------+----------+----------+---------+\n");
 
 	rate = theory / 8;
 	if (rate < 200)
 		rate = 200;
 	while (!stop_flag) {
-		uint64_t lost = 0, completed = 0;
-		double p99 = 0, ach = 0;
+		struct run_summary sum;
 		bool pass;
 		int i;
 
@@ -1354,42 +1463,34 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 			pair_reset(&pairs[i]);
 		if (run_pairs(o, pairs, npairs, true))
 			return 1;
-		for (i = 0; i < npairs; i++) {
-			double p = hist_pct(&pairs[i].h_total, 99);
-
-			lost += pairs[i].lost;
-			completed += pairs[i].h_total.count;
-			if (p > p99)
-				p99 = p;
-			if (pairs[i].elapsed_ns)
-				ach += (double)pairs[i].h_total.count * 1e9 /
-				       (double)pairs[i].elapsed_ns;
-		}
-		ach /= npairs;
+		sum = summarize_pairs(pairs, npairs);
 		/* a step with (almost) no completed probes is broken setup,
 		 * never a pass - e.g. sockets failed to open */
-		pass = !lost && p99 <= (double)o->p99_limit_us && !stop_flag &&
-		       (o->duration_s ? completed > 0 :
-		       completed >= (uint64_t)o->sweep_frames *
-				    (uint64_t)npairs * 9U / 10U);
-		printf("| %4d | %10.0f | %9.0f | %8llu | %8.0f | %-7s |\n",
-		       ++step, rate, ach, (unsigned long long)lost, p99,
+		pass = !sum.lost && !stop_flag &&
+		       (o->duration_s ? sum.samples > 0 :
+		       sum.samples >= (uint64_t)o->sweep_frames *
+				      (uint64_t)npairs * 9U / 10U);
+		printf("| %4d | %10.0f | %9.0f | %8llu | %8.0f | %8.0f | %-7s |\n",
+		       ++step, rate, sum.delivered_fps_pair,
+		       (unsigned long long)sum.lost, sum.worst_p99_us,
+		       sum.worst_p999_us,
 		       stop_flag ? "ABORT" : pass ? "PASS" : "FAIL");
 		if (stop_flag)
 			break;
 		if (pass) {
 			/* Saturation knee: a passing step whose DELIVERED rate
-			 * did not climb >3% over the best so far means the
-			 * window/pipeline is delivering its max - offering more
+			 * did not climb >3% over the best so far means the data
+			 * path is delivering its max - offering more
 			 * only fills the in-flight window, not the wire. That
 			 * delivered rate IS the throughput ceiling; stop here
 			 * rather than chasing the offered rate to its cap. */
-			if (best_deliv > 0 && ach <= best_deliv * 1.03) {
+			if (best_deliv > 0 &&
+			    sum.delivered_fps_pair <= best_deliv * 1.03) {
 				saturated = true;
 				break;
 			}
-			if (ach > best_deliv) {
-				best_deliv = ach;
+			if (sum.delivered_fps_pair > best_deliv) {
+				best_deliv = sum.delivered_fps_pair;
 				best_off = rate;
 			}
 			lo = rate;
@@ -1417,20 +1518,50 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 			}
 		}
 	}
-	printf("+------+------------+-----------+----------+----------+---------+\n");
+	printf("+------+------------+-----------+----------+----------+----------+---------+\n");
 	if (best_deliv > 0) {
+		struct opts confirm = *o;
+		struct cnt_snap snap0, snap1;
+		struct run_summary final;
+		enum counter_state counters;
 		/* Physical CAN buses carrying the load: --bidir mirrors every
 		 * wire so two opposing pairs share one half-duplex bus; without
 		 * it each pair owns its bus. Per-bus utilization (not per-pair vs
 		 * full bus) is the honest saturation metric. */
 		int buses = o->bidir ? npairs / 2 : npairs;
-		double per_bus = (buses > 0) ? best_deliv * npairs / buses : best_deliv;
-		double bus_util = 100.0 * per_bus / theory;
+		double gap = 1e6 / best_deliv;
+		int gap_us = (int)gap;
+		double per_bus, bus_util;
+
+		if ((double)gap_us < gap)
+			gap_us++;
+		if (gap_us < 1)
+			gap_us = 1;
+		confirm.gap_us = gap_us;
+
+		printf("final confirmation: offered %.0f fps/pair, gap=%dus\n",
+		       best_deliv, confirm.gap_us);
+		usleep(1100000); /* let the 1 Hz gateway STATS cache settle */
+		counters_snapshot(&snap0);
+		for (int i = 0; i < npairs; i++)
+			pair_reset(&pairs[i]);
+		if (run_pairs(&confirm, pairs, npairs, true))
+			return 1;
+		usleep(1100000);
+		counters_snapshot(&snap1);
+		final = summarize_pairs(pairs, npairs);
+		counters = counters_delta(&snap0, &snap1);
+
+		per_bus = (buses > 0) ? final.delivered_fps_pair * npairs / buses :
+					final.delivered_fps_pair;
+		bus_util = 100.0 * per_bus / theory;
 
 		/* MSR is the DELIVERED rate (what the system actually carried
-		 * with zero loss and bounded p99), not the offered rate. */
+		 * with zero loss), not the offered rate. Percentiles are
+		 * reported as evidence, not used as customer pass/fail gates. */
 		printf("MSR = %.0f fps/pair DELIVERED (%d concurrent, %.0f fps aggregate)\n",
-		       best_deliv, npairs, best_deliv * npairs);
+		       final.delivered_fps_pair, npairs,
+		       final.delivered_fps_pair * npairs);
 		if (o->bidir)
 			printf("  per CAN bus: %.0f fps across 2 directions = %.0f%% of bus theory (%.0f fps/bus)\n",
 			       per_bus, bus_util, theory);
@@ -1440,7 +1571,7 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 
 		/* Evidence-based ceiling classification: a bus sitting near its
 		 * physical ceiling is bus-bound (the wire is the limit); a plateau
-		 * well below it is pipeline-bound (window depth / face pool / ISR
+		 * well below it is data-path-bound (window depth / face pool / ISR
 		 * upstream of the wire), which is the only case worth optimizing. */
 		if (bus_util >= 65.0) {
 			printf("  ceiling: CAN-bus-bound - each bus is near its physical limit%s\n",
@@ -1449,15 +1580,17 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 			       "    so per-pair is ~half the bus and CAN arbitration caps it below unidirectional"
 			       : "");
 		} else if (saturated || best_off > best_deliv * 1.05) {
-			printf("  ceiling: pipeline-bound - delivered plateaued at ~%.0f fps/pair (offered up to %.0f)\n"
+			printf("  ceiling: data-path-bound - delivered plateaued at ~%.0f fps/pair (offered up to %.0f)\n"
 			       "    while the bus sat at only %.0f%%, so the limit is UPSTREAM of the wire\n"
 			       "    (window depth / face pool / ISR), not the CAN bus - this is the case to optimize\n",
-			       best_deliv, best_off, bus_util);
+			       final.delivered_fps_pair, best_off, bus_util);
 		}
+		print_bandwidth_evidence(&final, counters, npairs);
+		return run_zero_loss(&final, counters) ? 0 : 1;
 	} else {
-		printf("no passing rate found (link broken, or lower the start rate / raise the p99 limit)\n");
+		printf("no zero-loss rate found (link broken, or lower the start rate)\n");
 	}
-	return (best_deliv > 0) ? 0 : 1;
+	return 1;
 }
 
 static void usage(void)
@@ -1471,10 +1604,13 @@ static void usage(void)
 "  canperf                    same as: canperf latency\n"
 "\n"
 "default CAN FD rate: 1M/5M (bitrate 1000000, dbitrate 5000000)\n"
+"final result: RESULT line for customers, EVIDENCE line for repeatable records\n"
+"latency reports p50/p99/p99.9 (p999); bandwidth runs a final confirmation\n"
+"zero-loss evidence means application lost=0 and readable counters are clean\n"
 "\n"
 "Options:\n"
 "  --pair A:B      test one pair; repeat or comma-separate pairs\n"
-"  --count N       frames per pair for latency (default 5000; 0 = unbounded)\n"
+"  --count N       frames per pair for latency (default 10000; 0 = unbounded)\n"
 "  --duration T    run for a time instead of a frame count: 100s, 2m, 1h\n"
 "  --bitrate R     arbitration bitrate, k/M suffix ok (default 1M)\n"
 "  --dbitrate R    CAN FD data bitrate, k/M suffix ok (default 5M)\n"
@@ -1503,8 +1639,8 @@ int main(int argc, char **argv)
 		{ "help",     0, 0, 'h' }, { 0, 0, 0, 0 },
 	};
 	struct opts opts = {
-		.count = 5000, .gap_us = 1000, .size = 64, .report_s = 10,
-		.window = 1, .sweep_frames = 20000, .p99_limit_us = 1000,
+		.count = 10000, .gap_us = 1000, .size = 64, .report_s = 10,
+		.window = 1, .sweep_frames = 20000,
 		.setup = true, .bitrate = 1000000, .dbitrate = 5000000,
 	};
 	struct cnt_snap snap0, snap1;
@@ -1721,15 +1857,13 @@ int main(int argc, char **argv)
 	}
 
 	print_banner(&opts, npairs);
-	counters_snapshot(&snap0);
 
 	if (opts.sweep) {
 		ret = sweep_run(&opts, pairs, npairs);
-		counters_snapshot(&snap1);
-		counters_delta(&snap0, &snap1);
 		return stop_flag ? 130 : ret;
 	}
 
+	counters_snapshot(&snap0);
 	if (run_pairs(&opts, pairs, npairs, false))
 		return 1;
 
@@ -1740,7 +1874,13 @@ int main(int argc, char **argv)
 	}
 	summary_table(pairs, npairs);
 	counters_snapshot(&snap1);
-	counters_delta(&snap0, &snap1);
+	{
+		struct run_summary sum = summarize_pairs(pairs, npairs);
+		enum counter_state counters = counters_delta(&snap0, &snap1);
+
+		print_latency_evidence(&sum, counters);
+		ret = run_zero_loss(&sum, counters) ? 0 : 1;
+	}
 
 	return stop_flag ? 130 : ret;
 }

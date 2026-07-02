@@ -44,13 +44,10 @@
 #define E2CF_DEFAULT_NOM_BITRATE 1000000U
 #define E2CF_DEFAULT_DAT_BITRATE 5000000U
 
-/* ---- CAN resource plan (design doc 03 §3.3) --------------------------- */
-/* All six instances use the same RX MB bank + single TX MB scheme. CAN0's
- * Enhanced RX FIFO (the only instance that has one) is parked: with the
- * eFIFO enabled, no RX interrupt ever fired on this silicon (the eFIFO
- * flags appear to route to an IRQ line this design does not serve), so
- * CAN0 uses the MB-bank path proven on CAN1-5. The eFIFO + eDMA batching
- * offload remains the Phase-2 item (design doc 03 deviation table). */
+/* ---- CAN resource plan (docs/mcxe31b-firmware-design.md) -------------- */
+/* All six instances use RX MB banks plus one active TX MB per channel. CAN0
+ * also has an Enhanced RX FIFO, but this product uses the same MB-bank receive
+ * path as CAN1-5 so all channels share one ordering and overflow model. */
 
 /* Per-instance RX MB bank depth (64-byte payload MBs), single TX MB. */
 #define E2CF_RX_MB_CAN0 8U  /* CAN0: 96-MB instance, same depth as CAN1/2 */
@@ -70,12 +67,9 @@
  * of s_rx_buff (vs 24.5 KB at 8); 64 would balloon to 192 KB and is overkill -
  * the wire serializes arrivals, so ~16 deep already covers any ISR-held window. */
 #define E2CF_ETH_RXBD_NUM 16U
-/* TX ring depth raised 8 -> 64: wire captures proved a rare TX
- * descriptor-ring WRAP anomaly (the frame queued in slot 0 vanishes and
- * an already-completed frame is retransmitted byte-identically; see
- * eth2can_design/eqos_tx_ring_wrap_report.md). A deeper ring cuts the
- * wrap rate 8x, and any residual loss moving to a mod-64 fingerprint
- * confirms the diagnosis. Costs +896 B of non-cacheable DTCM. */
+/* TX ring depth is 64 and eth_raw_send() keeps one descriptor slot unused so
+ * the EQOS DMA tail pointer never depends on a full-ring state; see
+ * docs/eqos-tx-ring-design.md. Costs +896 B of non-cacheable DTCM. */
 #define E2CF_ETH_TXBD_NUM 64U
 #define E2CF_ETH_RXBUFF_NUM (E2CF_ETH_RXBD_NUM * 2U)
 /* TX frame staging faces (sealed frames waiting in/for the EQOS TX ring):
@@ -90,15 +84,9 @@
 /* ---- NVIC priorities (design doc 03 §3.2; lower value = higher) ------- */
 #define E2CF_IRQPRIO_CAN_RX 1U /* CAN0..5 MB (RX + TX-complete) */
 /*
- * EMAC at the SAME level as CAN (no mutual preemption). The A/B disproved the
- * idea that dropping EMAC below CAN would lift FPS: at EMAC=2 the bus rate did
- * NOT improve (~6700 vs ~6900 fps) while loss exploded - face starvation
- * returned (starv +105) AND the now-preemptible EMAC RX ISR let the EQOS RX
- * ring overflow under CAN bursts (downlink seq_lost +332). Equal priority is
- * the better operating point: it balances CAN and EMAC so neither starves the
- * other. The residual tx_bus tail (TX-complete latency) is CAN-vs-CAN ISR
- * contention (TX-complete queued behind another channel's RX drain at the same
- * priority), independent of EMAC - so EMAC priority is not the FPS lever.
+ * EMAC and CAN run at the same priority. This keeps ingress and egress service
+ * balanced under full-duplex CAN FD traffic; no gateway ISR preempts the other,
+ * so sustained load relies on short ISR work and bounded queues.
  */
 #define E2CF_IRQPRIO_EMAC 1U
 #define E2CF_IRQPRIO_SYSTICK 3U

@@ -12,7 +12,7 @@
  * SHARED between the MCXE31B firmware and the Linux eth2can driver - keep this
  * file free of SDK / kernel includes. Wire format is LITTLE-ENDIAN (both ends
  * are little-endian ARM; deliberately not network byte order, see the protocol
- * spec, eth2can_design doc 01 section 3). All multi-byte fields are naturally
+ * spec docs/e2cf-protocol-spec.md). All multi-byte fields are naturally
  * aligned and every record is padded to a 4-byte boundary, so the packed
  * structs below can be overlaid on the wire buffer directly on both ends.
  *

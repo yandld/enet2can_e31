@@ -2875,18 +2875,10 @@ status_t ENET_QOS_SendFrame(ENET_QOS_Type *base,
     /* Update the transmit tail address. */
     txDesc = &txBdRing->txBdBase[txBdRing->txGenIdx];
     /*
-     * E2CF WORKAROUND (project-local SDK modification, see
-     * eth2can_design/eqos_tx_ring_wrap_report.md): the stock SDK points the
-     * tail one descriptor PAST the ring end when txGenIdx wraps to 0.
-     * Wire captures on MCXE31B showed a rare wrap-edge anomaly with that
-     * scheme: the frame queued in slot 0 is silently skipped and an
-     * already-completed descriptor is retransmitted byte-identically
-     * (observed twice in 200k frames, always slot 0 lost / slot N-3
-     * duplicated). Keep the tail INSIDE the ring (it simply wraps to the
-     * base) the way Linux stmmac drives the same Synopsys EQOS IP. The
-     * caller must then never fill the ring completely - tail equal to the
-     * oldest pending descriptor would read as an empty ring - which
-     * eth_raw_send() guarantees by keeping one slot unused.
+     * E2CF tail-pointer rule (project-local SDK modification, see
+     * docs/eqos-tx-ring-design.md): keep the tail address inside the TX ring
+     * when txGenIdx wraps to 0. eth_raw_send() also leaves one descriptor slot
+     * unused so the DMA never sees a full ring as an ambiguous state.
      */
     txDescTail = (uint32_t)(uintptr_t)txDesc & ~ENET_QOS_ADDR_ALIGNMENT;
 #if defined(FSL_FEATURE_MEMORY_HAS_ADDRESS_OFFSET) && FSL_FEATURE_MEMORY_HAS_ADDRESS_OFFSET

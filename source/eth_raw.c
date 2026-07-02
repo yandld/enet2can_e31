@@ -352,8 +352,8 @@ status_t eth_raw_send(uint8_t *frame, uint32_t len)
      * and the EMAC ISR. SendFrame is short (one descriptor + doorbell). */
     __disable_irq();
     /* Keep one descriptor slot permanently unused: with the wrap-safe
-     * tail-pointer WORKAROUND in ENET_QOS_SendFrame (see
-     * eth2can_design/eqos_tx_ring_wrap_report.md) the tail must never
+     * tail-pointer rule in ENET_QOS_SendFrame (see
+     * docs/eqos-tx-ring-design.md) the tail must never
      * land on the oldest pending descriptor, or a completely full ring
      * would be indistinguishable from an empty one to the DMA. */
     if ((s_tx_submitted - s_tx_reclaimed) >= (E2CF_ETH_TXBD_NUM - 1U))

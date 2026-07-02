@@ -14,10 +14,10 @@ Three parts, all in this repo:
   `linux/src/eth2can.c`) exposing the 6 channels as standard SocketCAN devices
   `eth2can0..5`, plus the portable installer `linux/scripts/install_driver.sh`.
 - **`tools/imx95/`** — internal i.MX95/RTE kernel build, deploy, and bundle scripts.
-- **`eth2can_design/`** — three Chinese design docs. `01_E2CF协议规范.md` is the **normative
-  protocol spec**; its §9 conformance checklist is binding (deviating code is a spec violation,
-  not an implementation choice). 02 = Linux side, 03 = MCXE side. The root `README.md` has a
-  table of recorded v1-vs-design deviations — update it when closing one.
+- **`docs/`** — Chinese design specs with English filenames:
+  `e2cf-protocol-spec.md`, `linux-driver-design.md`, `mcxe31b-firmware-design.md`, and
+  `eqos-tx-ring-design.md`. The protocol spec is normative; code and tests should stay aligned
+  with these files.
 
 **Shared wire format**: `source/e2cf_proto.h` and `linux/src/e2cf_proto.h` are byte-identical
 copies with **no sync automation** — any wire-format change must be applied to both files (and
@@ -29,19 +29,13 @@ byte-order conversion. DATA record head is layout-congruent with `canfd_frame[0.
 
 ### MCU firmware (root)
 
-```sh
-make                # armclang; default AC6=/opt/ArmCompilerforEmbedded6.24
-make clean          # outputs: build/e2cf_mcxe31.{axf,bin,map}
-```
+Build the MCXE31B firmware with Keil MDK project `e2cf_mcxe31.uvprojx`. The repository does not
+maintain a root Makefile, GCC build, or CMake build for the firmware.
 
-Requires Arm Compiler for Embedded 6 (armclang/armlink/fromelf). `armgcc/` is empty — there is
-no GCC/CMake build. Alternative: Keil MDK project `e2cf_mcxe31.uvprojx` (same compiler/scatter).
-
-Both builds force-include `source/mcux_config.h` + `source/mcuxsdk_version.h` (Keil via
-MiscControls, Makefile via `-include` in CFLAGS) — this defines `FSL_ETH_ENABLE_CACHE_CONTROL`,
-which compiles EMAC RX cache invalidation into `fsl_enet_qos.c`; do not drop it (D-cache is on
-and RX buffers live in cacheable SRAM). Remaining Makefile/Keil divergence is non-functional:
-Keil assembles `utilities/fsl_memcpy.S` (CLI uses libc memcpy) and uses a higher -O level.
+The Keil target force-includes `source/mcux_config.h` + `source/mcuxsdk_version.h` via
+MiscControls. This defines `FSL_ETH_ENABLE_CACHE_CONTROL`, which compiles EMAC RX cache
+invalidation into `fsl_enet_qos.c`; do not drop it because D-cache is on and RX buffers live in
+cacheable SRAM. Keil also assembles `utilities/fsl_memcpy.S`.
 
 No automated tests. Runtime verification = UART debug console @115200 (single keys: `0..5` log
 level, `m` module mask, `s` dump stats, `?` help). The periodic UART stats line is **off by
@@ -115,10 +109,9 @@ timebase) and `dbg_log` are leaf utilities.
 The data plane runs entirely in ISRs; the superloop only handles deadlines and slow paths:
 
 - **CAN→ETH (CAN ISR, NVIC prio 1)**: all six instances read their RX MB banks and insertion-sort
-  by 16-bit timestamp (with IRMQ, MB index order ≠ arrival order). CAN0's Enhanced RX FIFO is
-  parked: enabled, its RX interrupt never fired on this silicon (flags appear to route to the
-  unserved MB32-63 line) — Phase 2 must fix the line routing before reviving eFIFO+eDMA. Records
-  append into DTCM aggregation "faces"; flush on 17 records / face full / 50 µs T_agg deadline.
+  by 16-bit timestamp (with IRMQ, MB index order ≠ arrival order). CAN0 uses the same MB-bank
+  receive path as CAN1-5; records append into DTCM aggregation "faces"; flush on 17 records /
+  face full / 50 µs T_agg deadline.
 - **ETH→CAN (EMAC ISR, prio 1 — same level as CAN, no mutual preemption)**: zero-copy EQOS RX → demux → DATA records into per-channel
   16-deep `sw_txfifo` feeding a **single active TX MB** (strict per-channel ordering — multiple
   TX MBs would arbitrate by CAN ID and reorder; spec §6.3). CFG ops (including full
@@ -144,8 +137,8 @@ through the unmodified NIC driver. TX via `dev_queue_xmit`. `ndo_start_xmit` cla
 16-bit `echo_busy` bitmap (slot index = wire `tag`); TXC matches it back via
 `can_get_echo_skb`. `ndo_open` = STOP→SET_BITRATE→START CFG transaction (sleepable, serialized
 by `cfg_lock`); RX handlers run in softirq context — keep GFP_ATOMIC/spinlock discipline.
-Carrier state is driven solely by gateway HBs. Phase 2 (per design doc 02) replaces only the
-transport with `enetc4_ecat_fast_*_k` variants — protocol logic stays.
+Carrier state is driven solely by gateway HBs. The driver uses the standard packet hook and
+`dev_queue_xmit` transport; protocol logic is isolated from NIC-specific details.
 
 ### Memory map & board (firmware)
 
@@ -168,9 +161,8 @@ transport with `enetc4_ecat_fast_*_k` variants — protocol logic stays.
 
 `drivers/`, `component/`, `utilities/`, `device/`, `CMSIS/`, `startup/`, `boot_header/` are NXP
 MCUXpresso SDK code — configure via `source/mcux_config.h` / `source/e2cf_config.h` rather than
-editing. ONE recorded exception: the `E2CF WORKAROUND` block in `drivers/fsl_enet_qos.c`
-`ENET_QOS_SendFrame` (TX ring-wrap tail pointer; wire-proven frame-skip/retransmit anomaly —
-see `eth2can_design/eqos_tx_ring_wrap_report.md` and the README deviation table). Do not add
-further SDK edits; revert this one when the SDK ships an official fix. Project-owned code is `source/`, `board/board.c`, `board/hardware_init.c`, the Makefile,
+editing. ONE project-local exception: the `E2CF tail-pointer rule` block in
+`drivers/fsl_enet_qos.c` `ENET_QOS_SendFrame`; see `docs/eqos-tx-ring-design.md`. Do not add
+further SDK edits without a matching design update. Project-owned code is `source/`, `board/board.c`, `board/hardware_init.c`,
 and everything under `linux/` (sources: `src/`, `Makefile`, `scripts/` — the `.ko`/`.o`/`.tgz`
 files sitting in `linux/` are build artifacts).

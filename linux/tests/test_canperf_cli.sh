@@ -57,6 +57,10 @@ help=$tmp/help.out
 assert_contains "$help" "canperf latency"
 assert_contains "$help" "canperf bandwidth"
 assert_contains "$help" "default CAN FD rate: 1M/5M"
+assert_contains "$help" "p99.9 (p999)"
+assert_contains "$help" "final confirmation"
+assert_contains "$help" "zero-loss evidence"
+assert_contains "$help" "RESULT line for customers"
 assert_contains "$help" "--pair A:B"
 assert_contains "$help" "--count N"
 assert_contains "$help" "--duration T"
@@ -81,6 +85,15 @@ assert_contains "$tmp/latency-help.out" "canperf latency"
 
 "$BIN" bandwidth --help >"$tmp/bandwidth-help.out"
 assert_contains "$tmp/bandwidth-help.out" "canperf bandwidth"
+
+SRC="$CANPERF_DIR/src/canperf.c"
+assert_not_contains "$SRC" "criterion: lost=0 & p99<="
+assert_contains "$SRC" "RESULT latency"
+assert_contains "$SRC" "RESULT bandwidth"
+assert_contains "$SRC" "EVIDENCE latency"
+assert_contains "$SRC" "EVIDENCE bandwidth"
+assert_contains "$SRC" "final confirmation"
+assert_contains "$SRC" "p99.9"
 
 expect_rejected "$tmp/perf.out" "$tmp/perf.err" --performance --no-setup --count 1
 expect_rejected "$tmp/csv.out" "$tmp/csv.err" --csv --no-setup --count 1

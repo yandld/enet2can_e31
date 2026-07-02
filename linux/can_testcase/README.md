@@ -37,7 +37,7 @@ eth2can1 <-> eth2can2
 eth2can3 <-> eth2can5
 ```
 
-每组 CAN FD 总线需要正确终端和收发器。测试前先确认 `linux/scripts/install_driver.sh` 已经加载驱动并配置 1M/5M。
+每组是独立 CAN FD 总线。总线两端各 120Ω 终端，CANH/CANL 不能接反，收发器需要正确供电并与网关共地。测试前先确认 `linux/scripts/install_driver.sh` 已经加载驱动并配置 1M/5M。
 
 ## 延迟测试
 
@@ -51,10 +51,10 @@ eth2can3 <-> eth2can5
 
 输出重点：
 
-- `lost` 应为 0
-- `total` 的 p50/p99 是客户最直观的端到端延迟
+- 最后的 `RESULT latency` 行是客户结论，`PASS` 表示 zero-loss
+- `total` 的 p50/p99/p99.9 是客户最直观的端到端延迟；p99.9 即 p999
 - `L1/L2/L3/L4` 用于定位延迟来自 Linux TX、以太网、MCU/CAN 或 Linux RX
-- counters delta 用于判断是否发生 driver/gateway 丢帧
+- `EVIDENCE latency` 行用于保存复验证据；`counters=clean` 表示驱动/网关丢帧、溢出、拒绝等计数器未增长
 
 ## 双向带宽测试
 
@@ -64,15 +64,16 @@ eth2can3 <-> eth2can5
 ./canperf bandwidth --count 30000
 ```
 
-`bandwidth` 会自动对每组线束做双向并发测试，并搜索 zero-loss 且 p99 受控的最大可持续速率。输出中的 `MSR` 是最终带宽结论。
+`bandwidth` 会先搜索候选速率，再自动执行一次 final confirmation。客户验收只看 final confirmation 后的 `RESULT bandwidth`、`MSR` 和 `EVIDENCE bandwidth`，不要把 sweep 试探阶段当作验收结论。zero-loss 表示本次确认轮无应用层丢帧且可读取 counters 为 clean；MSR 是 maximum sustainable rate，即最终带宽结论。
 
 结果解读：
 
-- `lost=0` 是最重要前提
+- `RESULT bandwidth: PASS` 是最重要前提
 - `MSR = ... fps/pair DELIVERED` 是每个方向的可持续帧率
 - `aggregate` 是所有并发方向合计帧率
 - `per CAN bus` 说明每条物理 CAN 总线的利用率
-- `ceiling` 会提示当前更像 CAN 总线受限还是网关/主机 pipeline 受限
+- `ceiling` 会提示当前更像 CAN 总线受限还是网关/主机数据路径受限
+- `EVIDENCE bandwidth` 是可复制到报告里的简洁证据行
 
 ## 常用参数
 

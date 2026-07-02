@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * eth2can.c - E2CF Ethernet-to-CANFD gateway driver, PHASE 1 transport
+ * eth2can.c - E2CF Ethernet-to-CANFD gateway driver
  *
  * Copyright 2026 NXP
  * Author: Ken Li <ken.li@nxp.com>
@@ -8,18 +8,13 @@
  * Exposes the 6 CANFD channels of the MCXE31B gateway as standard SocketCAN
  * network devices (eth2can0..5).
  *
- * Phase-1 transport (this file): a packet_type hook on an existing ethernet
- * interface. dev_add_pack(ETH 0x88B5) intercepts ONLY E2CF frames; all other
- * traffic flows through the regular stack untouched, and the NIC keeps its
- * stock driver. TX uses dev_queue_xmit(). This runs on ANY NIC (including
- * the standard fsl-enetc4) at softirq-path latency.
- *
- * Phase 2 (design doc 02) swaps only this transport for the enetc4_ecat
- * fast path (_k variants) + RT kthreads; the protocol logic above the
- * transport boundary is unchanged.
+ * Transport: a packet_type hook on an existing ethernet interface.
+ * dev_add_pack(ETH 0x88B5) intercepts ONLY E2CF frames; all other traffic
+ * flows through the regular stack untouched, and the NIC keeps its stock
+ * driver. TX uses dev_queue_xmit().
  *
  * Architecture model: gs_usb (multi-channel mux, echo-id window flow
- * control); wire format: see e2cf_proto.h and the protocol spec (eth2can_design doc 01).
+ * control); wire format: see e2cf_proto.h and docs/e2cf-protocol-spec.md.
  *
  * Usage:
  *   insmod eth2can.ko ifname=eth0 [vid=100] [peer=aa:bb:cc:dd:ee:ff]

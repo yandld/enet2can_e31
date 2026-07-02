@@ -22,6 +22,7 @@
 #include "eth_raw.h"
 #include "fsl_debug_console.h"
 #include "gw_time.h"
+#include "status_led.h"
 
 static volatile uint32_t s_ms;
 
@@ -52,6 +53,7 @@ static void fault_log_and_halt(const char *name, const uint32_t *stacked, uint32
     PRINTF("  exc_return=%08lx CFSR=%08lx HFSR=%08lx BFAR=%08lx\r\n",
            (unsigned long)exc_return, (unsigned long)SCB->CFSR,
            (unsigned long)SCB->HFSR, (unsigned long)SCB->BFAR);
+    status_led_fault();
     while (1)
     {
         __asm volatile("nop");
@@ -96,6 +98,7 @@ int main(void)
 #endif
 
     BOARD_InitHardware();
+    status_led_init();
     gw_time_init();
     dbg_log_init();
 
@@ -115,11 +118,13 @@ int main(void)
     if (!eth_raw_init())
     {
         PRINTF("FATAL: ethernet init failed\r\n");
+        status_led_fault();
         while (1) {}
     }
     if (!can_hw_init())
     {
         PRINTF("FATAL: can init failed\r\n");
+        status_led_fault();
         while (1) {}
     }
     (void)e2cf_core_init();
@@ -130,6 +135,7 @@ int main(void)
 
         /* Data-plane housekeeping with sub-us resolution. */
         e2cf_core_poll();
+        status_led_poll(ms);
 
         /* 10 ms: CAN error/fault supervision + stuck-TX watchdog. */
         if ((ms - last_err_poll_ms) >= 10U)
