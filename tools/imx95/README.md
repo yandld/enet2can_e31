@@ -1,22 +1,38 @@
-# i.MX95 内部 Bench 工具
+# i.MX95 Maintainer Bench Notes
 
-本目录脚本用于内部 i.MX95/RTE bench：构建 vendor kernel、部署驱动、拷贝测试工具和维护启动分区。客户交付入口不是本目录，而是：
+[中文说明](README.zh-CN.md)
+
+This directory contains maintainer-only scripts for an internal i.MX95/RTE
+bench. They are used to build a vendor kernel, deploy the driver, copy test
+tools, and maintain the boot partition during integration work.
+
+These scripts are not the customer bring-up entry point. For normal Linux
+hosts, use:
 
 ```sh
 sh linux/scripts/install_driver.sh
 cd linux/can_testcase && make && ./canperf latency
 ```
 
-## 默认配置
+## Default configuration
 
-内部脚本与客户交付保持一致：CAN FD `bitrate 1000000` / `dbitrate 5000000`。
+The bench scripts keep the same customer-facing CAN FD defaults:
 
-`board_setup.sh` 会在板端加载 `eth2can.ko`，等待 MCXE31B heartbeat，然后配置 `eth2can0..5`。
+```text
+bitrate  1000000
+dbitrate 5000000
+```
 
-## 何时使用
+`board_setup.sh` loads `eth2can.ko` on the target board, waits for the MCXE31B
+heartbeat, and configures `eth2can0..5`.
 
-- NXP 内部 i.MX95 bench 自动部署
-- vendor kernel/driver 联调
-- 回归 canperf latency/bandwidth 前的板端准备
+## When to use
 
-普通客户安装、Raspberry Pi、Ubuntu/Debian、RK/i.MX vendor Linux 等平台，请优先使用 `linux/scripts/install_driver.sh`。
+- i.MX95/RTE bench automation
+- Vendor kernel and driver integration
+- Board preparation before repeated `canperf latency` or `canperf bandwidth`
+  runs
+
+Do not use this directory as a generic installation path for Raspberry Pi,
+Ubuntu/Debian, RK/i.MX vendor Linux, or other customer systems. Use
+`linux/scripts/install_driver.sh` instead.

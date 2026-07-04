@@ -1,47 +1,64 @@
-# eth2can Linux 驱动安装与测试
+# eth2can Linux Driver Installation and Test
 
-`eth2can.ko` 将 MCXE31B 网关的 6 路 CAN FD 暴露为标准 SocketCAN 设备 `eth2can0..5`。客户默认只需要安装驱动、确认链路、运行基础收发和 canperf 测试。
+[中文说明](README.zh-CN.md)
 
-默认 CAN FD 配置：`bitrate 1000000` / `dbitrate 5000000`。
+`eth2can.ko` exposes the six MCXE31B CAN FD channels as standard SocketCAN
+devices, `eth2can0` through `eth2can5`. Normal users only need to install the
+driver, confirm the Ethernet/E2CF heartbeat, run a basic CAN transmit check,
+and run `canperf` when acceptance evidence is required.
 
-## 环境要求
+Default CAN FD configuration:
 
-- Linux 发行版或 BSP 内核支持 SocketCAN：`CONFIG_CAN`、`CONFIG_CAN_RAW`、`CONFIG_CAN_DEV`
-- 有匹配当前 `uname -r` 的 kernel build tree，通常是 `/lib/modules/$(uname -r)/build`
-- 常用工具：`make`、`gcc`、`kmod`、`iproute2`、`can-utils`
+```text
+bitrate  1000000
+dbitrate 5000000
+fd       on
+```
 
-Raspberry Pi、Ubuntu/Debian、RK/i.MX vendor Linux 都走同一个安装脚本。若 vendor BSP 没有标准 headers，请用 `KDIR=/path/to/kernel/build` 指向匹配的内核构建目录。
+## Requirements
 
-## 一键安装
+- A Linux distribution or BSP kernel with SocketCAN enabled:
+  `CONFIG_CAN`, `CONFIG_CAN_RAW`, and `CONFIG_CAN_DEV`
+- A kernel build tree matching the running `uname -r`, usually
+  `/lib/modules/$(uname -r)/build`
+- Common tools: `make`, `gcc`, `kmod`, `iproute2`, and `can-utils`
 
-从仓库根目录运行：
+Raspberry Pi, Ubuntu/Debian, RK/i.MX vendor Linux, and similar systems use the
+same installer. If the vendor BSP does not provide standard headers, pass the
+matching kernel build directory through `KDIR=`.
+
+## One-command installation
+
+Run from the repository root:
 
 ```sh
 sh linux/scripts/install_driver.sh
 ```
 
-脚本会构建并加载 `eth2can.ko`，等待网关 heartbeat，然后把 `eth2can0..5` 配置为 1M/5M CAN FD。它不会安装 DKMS，不会写 systemd，也不会让模块跨重启自动加载。
+The script builds and loads `eth2can.ko`, waits for the MCXE31B heartbeat, and
+configures `eth2can0..5` for CAN FD 1M/5M. It does not install DKMS, write
+systemd units, or configure persistent module autoload.
 
-常用参数：
+Common options:
 
 ```sh
 sh linux/scripts/install_driver.sh --ifname eth1
 sh linux/scripts/install_driver.sh --ifname eth1 --vid 100
-KDIR=/path/to/kernel/build sh linux/scripts/install_driver.sh --ifname eth0
+KDIR=/path/to/kernel/build sh linux/scripts/install_driver.sh --ifname end0
 sh linux/scripts/install_driver.sh --dry-run
 sh linux/scripts/install_driver.sh --no-load
 sh linux/scripts/install_driver.sh --require-gateway
 ```
 
-显式覆盖速率：
+Explicit bitrate override:
 
 ```sh
 sh linux/scripts/install_driver.sh --bitrate 1000000 --dbitrate 5000000
 ```
 
-## 手动命令
+## Manual commands
 
-安装脚本失败排查时，可手动加载和配置：
+When debugging installer failures, load and configure the driver manually:
 
 ```sh
 sudo insmod linux/eth2can.ko ifname=eth0
@@ -50,16 +67,11 @@ sudo ip link set eth2can0 type can bitrate 1000000 dbitrate 5000000 fd on
 sudo ip link set eth2can0 up
 ```
 
-基础收发前，确认每组 CAN FD 总线两端各 120Ω 终端，CANH/CANL 未接反，收发器供电正常并与网关共地。
+Before basic traffic tests, check that each CAN FD bus has 120 ohm termination
+at both ends, correct CANH/CANL polarity, powered transceivers, and common
+ground.
 
-基础收发：
-
-```sh
-candump eth2can4 &
-cansend eth2can0 123##3001122334455667788
-```
-
-默认线束：
+Default harness:
 
 ```text
 eth2can0 <-> eth2can4
@@ -67,7 +79,14 @@ eth2can1 <-> eth2can2
 eth2can3 <-> eth2can5
 ```
 
-## 性能测试入口
+Basic transmit check:
+
+```sh
+candump eth2can4 &
+cansend eth2can0 123##3001122334455667788
+```
+
+## Performance test entry point
 
 ```sh
 cd linux/can_testcase
@@ -76,34 +95,42 @@ make
 ./canperf bandwidth
 ```
 
-客户验收先看最后的 `RESULT` 行：`latency` 给出端到端 p50/p99/p99.9，`bandwidth` 给出双向最大可持续速率 MSR。MSR 是 maximum sustainable rate；zero-loss 表示应用层无丢帧且可读取 counters 为 clean；p99.9 即 p999。`EVIDENCE` 行用于保存复验证据。当前文档不固定 p99 或 MSR 硬阈值。
+For acceptance, use the final `RESULT` line. `latency` reports end-to-end
+p50, p99, and p99.9. `bandwidth` reports bidirectional MSR, the maximum
+sustainable rate. `zero_loss=yes` means no application-level loss for the run.
+`counters=clean` means readable driver and gateway counters did not increase
+for loss, overflow, reject, or send-failure conditions. This repository does
+not define fixed p99 or MSR limits.
 
-## 故障排查
+## Troubleshooting
 
-| 现象 | 检查项 |
+| Symptom | Checks |
 |---|---|
-| 找不到 `/lib/modules/$(uname -r)/build` | 安装匹配当前内核的 headers，或传入 `KDIR=` |
-| `vermagic` mismatch | 在目标板当前内核上重编 `eth2can.ko` |
-| 没有 `eth2can0..5` | 查 `dmesg` 中 insmod 错误，确认 SocketCAN 内核配置 |
-| `gateway heartbeat was not observed` | 检查网线、选中的 `--ifname`、MCXE31B 固件和交换机/VLAN |
-| `ip link set eth2canN ...` 超时 | heartbeat 未建立或网关未响应 CFG |
-| CAN 收不到帧 | 检查默认线束、两端 120Ω 终端、收发器供电、共地、CANH/CANL 极性 |
+| `/lib/modules/$(uname -r)/build` is missing | Install headers matching the running kernel, or pass `KDIR=` |
+| `vermagic` mismatch | Rebuild `eth2can.ko` on the target kernel |
+| No `eth2can0..5` devices | Check `dmesg` for insmod errors and verify SocketCAN kernel config |
+| `gateway heartbeat was not observed` | Check cable, selected `--ifname`, MCXE31B firmware, switch path, and VLAN |
+| `ip link set eth2canN ...` times out | Heartbeat is not established or the gateway did not answer CFG |
+| CAN frame is not received | Check default harness, termination, transceiver power, common ground, CANH/CANL polarity, and bitrate |
 
-板载状态灯可辅助判断链路阶段：
+LED hints:
 
-| LED | 状态 | 检查方向 |
+| LED | State | Direction |
 |---|---|---|
-| SYS | 约 1 Hz 闪烁 | 固件主循环正常运行；若不闪烁，先检查固件烧录、电源和复位 |
-| NET | 熄灭 | PHY link down，检查网线、交换机和 Linux 网口是否 up |
-| NET | 闪烁 | PHY link up，但 E2CF peer heartbeat 未 ready；检查 `--ifname`、VLAN、驱动是否已加载、抓包是否有 EtherType `0x88b5` |
-| NET | 常亮 | Ethernet/E2CF 链路 ready，可以继续配置 `eth2can0..5` 和跑 canperf |
-| CAN | 闪烁 | 有 CAN RX/TX 流量，基础收发或 canperf 正在通过网关 |
-| CAN | 常亮 | 至少一路 active CAN error-passive/bus-off；检查终端、电平、CANH/CANL、速率和收发器供电 |
+| SYS | About 1 Hz blinking | Firmware superloop is running |
+| SYS | Not blinking | Check firmware image, power, and reset first |
+| NET | Off | PHY link down; check cable, switch, and host interface state |
+| NET | Blinking | PHY link up but E2CF peer heartbeat is not ready |
+| NET | Solid on | Ethernet/E2CF link is ready |
+| CAN | Blinking | CAN RX/TX traffic is active |
+| CAN | Solid on | At least one active CAN channel is error-passive or bus-off |
 
-heartbeat 抓包：
+Heartbeat capture:
 
 ```sh
 sudo tcpdump -eni eth0 'ether proto 0x88b5 or (vlan and ether proto 0x88b5)'
 ```
 
-期望看到 EtherType `0x88b5` heartbeat 周期帧。若 tcpdump 能看到但驱动无 `gateway alive`，请保存抓包和 `dmesg` 给支持团队。
+Expected traffic is an EtherType `0x88B5` heartbeat every 100 ms. If tcpdump
+sees traffic but the driver never reports `gateway alive`, save the packet
+capture and `dmesg` for support.

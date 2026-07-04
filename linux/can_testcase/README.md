@@ -1,35 +1,38 @@
-# canperf 客户测试工具
+# canperf Customer Test Tool
 
-`canperf` 只面向两类客户验收问题：
+[中文说明](README.zh-CN.md)
 
-- 延迟性能：`latency`
-- 双向最大可持续带宽：`bandwidth`
+`canperf` answers two customer acceptance questions for the MCXE31B bridge:
 
-默认 CAN FD 速率为 1M/5M，默认线束为 `0->4,1->2,3->5`。
+- Latency: `latency`
+- Bidirectional maximum sustainable bandwidth: `bandwidth`
 
-## 编译
+The default CAN FD rate is 1M/5M with BRS enabled. The default harness is
+`0<->4`, `1<->2`, and `3<->5`.
 
-在目标 Linux 主机上原生编译：
+## Build
+
+Native build on the target Linux host:
 
 ```sh
 make
 ```
 
-指定编译器：
+Use an explicit compiler:
 
 ```sh
 make CC=gcc
 make CC=clang
 ```
 
-显式 aarch64 交叉编译：
+Explicit aarch64 cross build:
 
 ```sh
 make cross
 make cross TOOLCHAIN_DIR=/opt/arm-gnu-toolchain
 ```
 
-## 线束
+## Wiring
 
 ```text
 eth2can0 <-> eth2can4
@@ -37,9 +40,36 @@ eth2can1 <-> eth2can2
 eth2can3 <-> eth2can5
 ```
 
-每组是独立 CAN FD 总线。总线两端各 120Ω 终端，CANH/CANL 不能接反，收发器需要正确供电并与网关共地。测试前先确认 `linux/scripts/install_driver.sh` 已经加载驱动并配置 1M/5M。
+Each pair is one independent CAN FD bus. Use 120 ohm termination at both ends,
+keep CANH/CANL polarity correct, power the transceivers, and share ground with
+the gateway. Before running `canperf`, load the driver and configure 1M/5M with
+`linux/scripts/install_driver.sh`.
 
-## 延迟测试
+## Test model
+
+`canperf` sends and receives on Linux SocketCAN devices. The tested path
+includes the Linux `eth2can` driver, Ethernet link, MCXE31B gateway, and
+physical CAN FD buses.
+
+`latency` uses the default directions `0->4`, `1->2`, and `3->5`. Each
+direction uses one thread and keeps only one CAN frame in flight to measure
+end-to-end latency.
+
+`bandwidth` mirrors the harness into six concurrent directions:
+
+```text
+0->4  4->0
+1->2  2->1
+3->5  5->3
+```
+
+Each direction uses an independent thread, SocketCAN socket, CAN ID, and
+incrementing sequence. The bandwidth test is a controlled rate stress test,
+not random traffic. It sends 64-byte CAN FD+BRS frames at a fixed cadence and
+keeps at most 16 frames in flight per direction, matching the driver TXC
+window depth.
+
+## Latency
 
 ```sh
 ./canperf
@@ -49,14 +79,19 @@ eth2can3 <-> eth2can5
 ./canperf latency --duration 10m
 ```
 
-输出重点：
+Output interpretation:
 
-- 最后的 `RESULT latency` 行是客户结论，`PASS` 表示 zero-loss
-- `total` 的 p50/p99/p99.9 是客户最直观的端到端延迟；p99.9 即 p999
-- `L1/L2/L3/L4` 用于定位延迟来自 Linux TX、以太网、MCU/CAN 或 Linux RX
-- `EVIDENCE latency` 行用于保存复验证据；`counters=clean` 表示驱动/网关丢帧、溢出、拒绝等计数器未增长
+- The final `RESULT latency` line is the customer conclusion; `PASS` means
+  zero-loss for that run.
+- `total` p50, p99, and p99.9 are the main end-to-end latency numbers.
+- p99.9 is also called p999.
+- `L1/L2/L3/L4` help localize latency to Linux TX, Ethernet, MCU/CAN, or
+  Linux RX.
+- `EVIDENCE latency` is intended for reproducible records.
+- `counters=clean` means driver and gateway loss, overflow, reject, and
+  failure counters did not increase during the run.
 
-## 双向带宽测试
+## Bidirectional bandwidth
 
 ```sh
 ./canperf bandwidth
@@ -64,27 +99,32 @@ eth2can3 <-> eth2can5
 ./canperf bandwidth --count 30000
 ```
 
-`bandwidth` 会先搜索候选速率，再自动执行一次 final confirmation。客户验收只看 final confirmation 后的 `RESULT bandwidth`、`MSR` 和 `EVIDENCE bandwidth`，不要把 sweep 试探阶段当作验收结论。zero-loss 表示本次确认轮无应用层丢帧且可读取 counters 为 clean；MSR 是 maximum sustainable rate，即最终带宽结论。
+`bandwidth` first sweeps candidate rates, then runs one final confirmation.
+For acceptance, only use `RESULT bandwidth`, `MSR`, and `EVIDENCE bandwidth`
+from the final confirmation. Do not treat sweep probes as acceptance results.
 
-结果解读：
+Result interpretation:
 
-- `RESULT bandwidth: PASS` 是最重要前提
-- `MSR = ... fps/pair DELIVERED` 是每个方向的可持续帧率
-- `aggregate` 是所有并发方向合计帧率
-- `per CAN bus` 说明每条物理 CAN 总线的利用率
-- `ceiling` 会提示当前更像 CAN 总线受限还是网关/主机数据路径受限
-- `EVIDENCE bandwidth` 是可复制到报告里的简洁证据行
+- `RESULT bandwidth: PASS` is the required first condition.
+- `MSR = ... fps/pair DELIVERED` is the sustainable frame rate per direction.
+- `aggregate` is the sum of all concurrent directions.
+- `per CAN bus` shows physical CAN bus utilization.
+- `ceiling` indicates whether the observed limit looks CAN-bus-bound or
+  gateway/host-path-bound.
+- `EVIDENCE bandwidth` is the compact line to copy into reports.
 
-## 常用参数
+## Common options
 
 ```sh
---pair A:B      指定一组线束，可重复或逗号分隔
---count N       latency 的帧数；bandwidth 的每步搜索帧数
---duration T    latency 的运行时间；bandwidth 的每步搜索时间
---bitrate R     nominal bitrate，默认 1M
---dbitrate R    CAN FD data bitrate，默认 5M
---no-setup      不自动配置 eth2canN
---help          查看帮助
+--pair A:B      Select one harness pair; repeat or comma-separate for more pairs
+--count N       Frame count for latency; per-step frame count for bandwidth
+--duration T    Runtime for latency; per-step runtime for bandwidth
+--bitrate R     Nominal bitrate, default 1000000
+--dbitrate R    CAN FD data bitrate, default 5000000
+--no-setup      Do not configure eth2canN automatically
+--help          Show help
 ```
 
-交付默认只支持 CAN FD BRS 测试；classic CAN、loopback、CSV、手动 sweep/window 不作为客户接口。
+The customer-facing test scope is CAN FD+BRS. Classic CAN, loopback, CSV
+export, and manual sweep/window tuning are not the default acceptance
+interfaces.

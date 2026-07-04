@@ -1,40 +1,52 @@
-# E2CF MCXE31B CAN FD 网关交付说明
+# MCXE31B Ethernet-to-Six-CAN FD Bridge
 
-本仓库交付 MCXE31B 以太网到 6 路 CAN FD 网关方案。Linux 侧加载 `eth2can.ko` 后，会看到标准 SocketCAN 设备 `eth2can0..5`，客户可以继续使用 `ip link`、`candump`、`cansend` 和上层 CAN 工具。
+[中文说明](README.zh-CN.md)
 
-默认交付配置为 CAN FD `bitrate 1000000` / `dbitrate 5000000`，即 1M/5M BRS。
+This repository delivers an MCXE31B-based Ethernet-to-six-CAN FD bridge.
+The Linux host loads `eth2can.ko` and sees six standard SocketCAN devices,
+`eth2can0` through `eth2can5`. Applications can keep using normal CAN tools
+such as `ip link`, `candump`, `cansend`, and higher-level SocketCAN software.
 
-## 交付内容
+The default CAN FD configuration is:
 
-| 路径 | 用途 |
+```text
+nominal bitrate: 1 Mbit/s
+data bitrate:    5 Mbit/s
+CAN FD BRS:      enabled
+```
+
+## What is included
+
+| Path | Purpose |
 |---|---|
-| `source/` | MCXE31B 网关固件源码 |
-| `linux/` | Linux SocketCAN 驱动、安装脚本和测试工具 |
-| `linux/can_testcase/` | `canperf` 延迟与双向带宽测试 |
-| `docs/` | 协议、Linux 驱动、MCU 固件和 EQOS TX 环设计说明 |
-| `tools/imx95/` | 内部 i.MX95 bench 构建/部署脚本，不作为客户入口 |
+| `source/` | MCXE31B bridge firmware source |
+| `board/` | Board clock, pin mux, and low-level board support |
+| `linux/` | Linux SocketCAN driver, installer, and driver tests |
+| `linux/can_testcase/` | `canperf` latency and bidirectional bandwidth tests |
+| `docs/*.md` | Design notes for E2CF, Linux driver, firmware, and EQOS TX handling |
 
-## 固件
+## System overview
 
-交付板若已预烧录固件，可直接上电。需要自行构建时，使用 Keil MDK 打开 `e2cf_mcxe31.uvprojx` 构建 MCXE31B 固件。烧录工具按客户现有 MCXE31B/SWD 流程执行。
+The bridge uses raw Layer-2 Ethernet between Linux and the MCXE31B gateway.
+The Linux driver exposes six SocketCAN interfaces and exchanges E2CF frames
+with the firmware. The firmware forwards traffic to FlexCAN0 through FlexCAN5.
 
-## 最短 Bring-up
+Key defaults:
 
-1. 烧录或确认 MCXE31B 固件已预装，然后上电。
-2. Linux 主机连接到网关以太网口。
-3. 从仓库根目录安装驱动：
+| Item | Value |
+|---|---|
+| Ethernet protocol | Raw Layer-2 E2CF, EtherType `0x88B5` |
+| Deployment VLAN | VID `100`; untagged frames are allowed during bring-up |
+| Linux interfaces | `eth2can0` through `eth2can5` |
+| CAN channels | FlexCAN0 through FlexCAN5 |
+| TX window | 16 echo slots per channel |
+| MCU-to-Linux aggregation | Count based or 50 us timer |
+| Heartbeat | 100 ms period, 500 ms timeout |
 
-```sh
-sh linux/scripts/install_driver.sh
-```
+## Hardware setup
 
-4. 确认 6 个 SocketCAN 设备存在并已配置为 1M/5M：
-
-```sh
-ip -details link show type can
-```
-
-5. 按默认线束连接 3 组 CAN 总线：
+Use six external CAN FD transceivers. For the default test harness, connect
+three independent CAN FD buses:
 
 ```text
 eth2can0 <-> eth2can4
@@ -42,88 +54,130 @@ eth2can1 <-> eth2can2
 eth2can3 <-> eth2can5
 ```
 
-每组是独立 CAN FD 总线：总线两端各 120Ω 终端，CANH/CANL 不能接反，收发器需要正确供电并与网关共地。
+Each CAN FD bus needs 120 ohm termination at both ends. Verify CANH/CANL
+polarity, transceiver power, and a common ground between the host setup and
+the gateway board.
 
-## 状态灯
+Status LEDs:
 
-| LED | GPIO | 状态 | 含义 |
+| LED | GPIO | State | Meaning |
 |---|---|---|---|
-| SYS | PTC16 | 约 1 Hz 闪烁 | 固件主循环运行中 |
-| SYS | PTC16 | 常亮 | 固件停在 fault/fatal path |
-| NET | PTB22 | 熄灭 | PHY link down |
-| NET | PTB22 | 闪烁 | PHY link up，但尚未建立 E2CF peer heartbeat |
-| NET | PTB22 | 常亮 | Ethernet/E2CF 链路 ready |
-| CAN | PTC14 | 熄灭 | 无 CAN 流量 |
-| CAN | PTC14 | 闪烁 | 有 CAN RX/TX 流量 |
-| CAN | PTC14 | 常亮 | 至少一路 active CAN 处于 error-passive 或 bus-off |
+| SYS | PTC16 | About 1 Hz blinking | Firmware superloop is running |
+| SYS | PTC16 | Solid on | Firmware is in a fault or fatal path |
+| NET | PTB22 | Off | PHY link is down |
+| NET | PTB22 | Blinking | PHY link is up, E2CF heartbeat is not ready yet |
+| NET | PTB22 | Solid on | Ethernet/E2CF link is ready |
+| CAN | PTC14 | Off | No CAN traffic |
+| CAN | PTC14 | Blinking | CAN RX/TX traffic is active |
+| CAN | PTC14 | Solid on | At least one active CAN bus is error-passive or bus-off |
 
-## 基础自检
+## Firmware
+
+If the board is already programmed, power it up and continue with the Linux
+driver setup. To build the firmware yourself, open `e2cf_mcxe31.uvprojx` in
+Keil MDK and build the MCXE31B target. Program the board with your normal
+MCXE31B/SWD flow.
+
+## Linux quick start
+
+Run the installer from the repository root on the target Linux host:
+
+```sh
+sh linux/scripts/install_driver.sh
+```
+
+The script builds `eth2can.ko` for the running kernel, loads it for the
+current boot, waits for the gateway heartbeat, and configures `eth2can0..5`
+for CAN FD 1M/5M. It does not install DKMS, systemd units, or persistent
+autoload configuration.
+
+Common options:
+
+```sh
+sh linux/scripts/install_driver.sh --ifname eth1 --vid 100
+KDIR=/path/to/kernel/build sh linux/scripts/install_driver.sh --ifname end0
+sh linux/scripts/install_driver.sh --dry-run
+sh linux/scripts/install_driver.sh --no-load
+sh linux/scripts/install_driver.sh --require-gateway
+```
+
+Check the created CAN devices:
+
+```sh
+ip -details link show type can
+```
+
+## Basic traffic check
+
+With the default harness connected, send one CAN FD+BRS frame from channel 0
+to channel 4:
 
 ```sh
 candump eth2can4 &
 cansend eth2can0 123##3001122334455667788
 ```
 
-如果 `eth2can4` 能收到帧，说明驱动、网关、物理 CAN 线束至少一组链路可用。
+If `eth2can4` receives the frame, the Linux driver, Ethernet path, MCXE31B
+firmware, and at least one physical CAN FD bus are working.
 
-## 交付测试
+## Acceptance tests
 
-构建客户测试工具：
+Build the customer test tool:
 
 ```sh
 cd linux/can_testcase
 make
 ```
 
-延迟测试：
+Run latency:
 
 ```sh
 ./canperf latency --count 10000
 ```
 
-双向最大可持续带宽测试：
+Run bidirectional maximum sustainable bandwidth:
 
 ```sh
 ./canperf bandwidth
 ```
 
-验收时先看最后的 `RESULT` 行：`PASS` 表示 zero-loss，延迟给出 p50/p99/p99.9，带宽给出 MSR。`EVIDENCE` 行用于保存复验证据；`counters=clean` 表示驱动/网关丢帧、溢出、拒绝等计数器未增长。p99.9 即 p999；当前文档不固定 p99 或带宽硬阈值，实际阈值应由客户线束、主机性能和系统负载共同确认。
+For acceptance, use the final `RESULT` line first. `PASS` means zero-loss for
+that run. Latency reports p50, p99, and p99.9. Bandwidth reports MSR, the
+maximum sustainable rate. The `EVIDENCE` line is intended for reproducible
+test records; `counters=clean` means the driver and gateway loss, overflow,
+reject, and send-failure counters did not increase during the confirmation
+round. This repository does not define fixed p99 or MSR limits; thresholds
+must be agreed for the target harness, host, and system load.
 
-## MCXE31B 引脚分配
+## Troubleshooting
 
-下表列出 CAN、Ethernet、Debug UART 主要连接，来自 `board/pin_mux.c` 的 MCUXpresso pin mux 配置，封装为 `MCXE31BMPB`。
+| Symptom | Checks |
+|---|---|
+| Kernel build tree is missing | Install headers matching `uname -r`, or pass `KDIR=/path/to/kernel/build` |
+| `vermagic` mismatch | Rebuild `eth2can.ko` on the target kernel |
+| No `eth2can0..5` devices | Check `dmesg`, SocketCAN kernel config, and module load errors |
+| Gateway heartbeat is missing | Check cable, selected `--ifname`, VLAN path, MCXE31B firmware, and EtherType `0x88B5` traffic |
+| CAN frame is not received | Check default harness wiring, termination, transceiver power, common ground, polarity, and CAN rate |
+| `counters=dirty` | Inspect `seq_lost`, `rx_ovf`, `rej`, `starv`, `sfail`, and `emac_rxdrop` deltas |
 
-| 功能 | 外设信号 | MCU 管脚 | 封装脚号 | 连接建议 |
-|---|---|---|---:|---|
-| CAN0 | FLEXCAN_0_TX | PTA7 | 100 | 接 CAN0 收发器 TXD |
-| CAN0 | FLEXCAN_0_RX | PTA6 | 102 | 接 CAN0 收发器 RXD |
-| CAN1 | FLEXCAN_1_TX | PTA11 | 160 | 接 CAN1 收发器 TXD |
-| CAN1 | FLEXCAN_1_RX | PTA12 | 159 | 接 CAN1 收发器 RXD |
-| CAN2 | FLEXCAN_2_TX | PTE24 | 157 | 接 CAN2 收发器 TXD |
-| CAN2 | FLEXCAN_2_RX | PTE25 | 158 | 接 CAN2 收发器 RXD |
-| CAN3 | FLEXCAN_3_TX | PTC28 | 96 | 接 CAN3 收发器 TXD |
-| CAN3 | FLEXCAN_3_RX | PTC29 | 99 | 接 CAN3 收发器 RXD |
-| CAN4 | FLEXCAN_4_TX | PTC30 | 101 | 接 CAN4 收发器 TXD |
-| CAN4 | FLEXCAN_4_RX | PTC31 | 103 | 接 CAN4 收发器 RXD |
-| CAN5 | FLEXCAN_5_TX | PTC27 | 93 | 接 CAN5 收发器 TXD |
-| CAN5 | FLEXCAN_5_RX | PTC26 | 91 | 接 CAN5 收发器 RXD |
-| Ethernet | EMAC_MII_RMII_MDIO | PTB4 | 48 | RMII PHY MDIO |
-| Ethernet | EMAC_MII_RMII_MDC | PTB5 | 47 | RMII PHY MDC |
-| Ethernet | EMAC_MII_RMII_TXD0 | PTC2 | 50 | RMII PHY TXD0 |
-| Ethernet | EMAC_MII_RMII_TXD1 | PTD7 | 51 | RMII PHY TXD1 |
-| Ethernet | EMAC_MII_RMII_TX_EN | PTD12 | 54 | RMII PHY TX_EN |
-| Ethernet | EMAC_MII_RMII_RX_DV | PTC17 | 65 | RMII PHY CRS_DV/RX_DV |
-| Ethernet | EMAC_MII_RMII_RXD0 | PTC1 | 61 | RMII PHY RXD0 |
-| Ethernet | EMAC_MII_RMII_RXD1 | PTC0 | 62 | RMII PHY RXD1 |
-| Ethernet | EMAC_MII_RMII_TX_CLK | PTD11 | 55 | RMII 50 MHz reference clock |
-| Ethernet | ENET_PHY_RST GPIO | PTC3 | 49 | PHY reset |
-| Debug UART | LPUART_5_RX | PTE3 | 27 | Debug console RX |
-| Debug UART | LPUART_5_TX | PTE14 | 26 | Debug console TX |
+Heartbeat capture:
 
-6 路 CAN FD 外部收发器建议使用 CAN SIC 等级器件。默认线束测试为 `CAN0<->CAN4`、`CAN1<->CAN2`、`CAN3<->CAN5`。
+```sh
+sudo tcpdump -eni eth0 'ether proto 0x88b5 or (vlan and ether proto 0x88b5)'
+```
 
-## 常见入口
+Expected traffic is an E2CF heartbeat every 100 ms.
 
-- Linux 驱动安装和故障排查：`linux/README.md`
-- canperf 编译和结果解读：`linux/can_testcase/README.md`
-- i.MX95 内部 bench 工具：`tools/imx95/README.md`
+## Documentation map
+
+- Linux driver installation and troubleshooting: [`linux/README.md`](linux/README.md)
+- `canperf` build and result interpretation: [`linux/can_testcase/README.md`](linux/can_testcase/README.md)
+- Protocol and implementation design notes: [`docs/`](docs/)
+
+## License and distribution
+
+This repository is not published under an open-source license in its current
+form. Copying, redistribution, product use, or publication outside the
+authorized project scope requires written permission from the repository owner.
+Some source files also carry their own SPDX notices; those notices must be
+preserved.
