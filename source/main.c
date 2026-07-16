@@ -115,6 +115,10 @@ int main(void)
     PRINTF("  dbg: keys 0-5=level m=mask s=stats p=profile ?=help\r\n");
     PRINTF("=============================================\r\n\r\n");
 
+    /* Core aggregation state (face=-1 sentinels) must be reset BEFORE any
+     * data-plane IRQ or CAN autostart can fire an upcall against it. */
+    (void)e2cf_core_init();
+
     if (!eth_raw_init())
     {
         PRINTF("FATAL: ethernet init failed\r\n");
@@ -127,7 +131,6 @@ int main(void)
         status_led_fault();
         while (1) {}
     }
-    (void)e2cf_core_init();
 
     while (1)
     {

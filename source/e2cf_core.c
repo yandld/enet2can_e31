@@ -69,8 +69,11 @@ typedef struct
     uint32_t open_cyc;    /* gw_cycles() when the face was opened (gw_prof) */
 } agg_t;
 
-static agg_t s_agg_data; /* MCU->Linux DATA */
-static agg_t s_agg_txc;  /* MCU->Linux TXC */
+/* Closed sentinel (face=-1) true from reset, independent of init order: a
+ * future bring-up reordering cannot leave the BSS-zero value 0 masquerading
+ * as an open face. agg_reset() re-establishes the same state at runtime. */
+static agg_t s_agg_data = { .face = -1 }; /* MCU->Linux DATA */
+static agg_t s_agg_txc  = { .face = -1 }; /* MCU->Linux TXC */
 
 static uint16_t s_tx_seq;
 static uint8_t s_peer_mac[6];

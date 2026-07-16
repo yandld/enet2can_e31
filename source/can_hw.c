@@ -1173,7 +1173,11 @@ void can_hw_poll_errors(void)
             uint32_t primask = __get_PRIMASK();
 
             __disable_irq();
-            if (ch->tx_busy) /* re-check under mask: TXC may have just fired */
+            /* Re-check the FULL timeout predicate under mask: a completion ISR
+             * in the unmasked window above may have sent the stuck frame's TXC
+             * and kicked a fresh frame (tx_busy true again, tx_start_ms restamped).
+             * Testing tx_busy alone would abort that healthy successor. */
+            if (ch->tx_busy && ((s_ms - (ch->tx_start_ms)) >= (CAN_TX_TIMEOUT_MS / 10U)))
             {
                 /* Reconfiguring the MB to inactive aborts the transmission. */
                 if (ch->use_fd)
