@@ -43,6 +43,7 @@
 #include <linux/workqueue.h>
 
 #include "e2cf_proto.h"
+#include "e2cf_data_layout.h"
 
 /* Wire-layout guards for the STATS body (spec §4.9). */
 static_assert(sizeof(e2cf_stats_hdr_t) == E2CF_STATS_HDR_SIZE);
@@ -787,22 +788,29 @@ static void e2cf_rx_data(struct e2cf_dev *edev, const u8 *rec, u16 remain,
 			 u8 count, u32 ts_base)
 {
 	ktime_t y = 0;
+	u16 trailer_offset;
 
 	(void)ts_base;
+	if (!e2cf_data_trailer_offset(rec, remain, count, &trailer_offset)) {
+		edev->stat_rx_bad++;
+		return;
+	}
+
 	/* "t4" eth-egress trailer: gateway-clock low32 ns at which the MCU
 	 * handed this frame to its EQOS TX, appended after the last record
 	 * (not in count). Delivered RAW (not mapped) as every record's skb
 	 * hardware timestamp; the app computes MCU residency as Y - X. */
-	if (remain >= E2CF_DATA_TX_TRAILER_SIZE) {
-		const u8 *t = rec + remain - E2CF_DATA_TX_TRAILER_SIZE;
+	{
+		const u8 *t = rec + trailer_offset;
 		u32 y_lo = (u32)t[0] | ((u32)t[1] << 8) |
 			   ((u32)t[2] << 16) | ((u32)t[3] << 24);
 
 		if (y_lo)
 			y = ns_to_ktime((u64)y_lo);
 	}
+	remain = trailer_offset;
 
-	while (count && remain >= E2CF_DATA_REC_HEAD_SIZE) {
+	while (count) {
 		const e2cf_data_rec_t *head = (const e2cf_data_rec_t *)rec;
 		u16 rec_size;
 		struct e2cf_chan *chan;

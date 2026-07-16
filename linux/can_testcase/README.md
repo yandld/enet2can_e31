@@ -82,7 +82,9 @@ window depth.
 Output interpretation:
 
 - The final `RESULT latency` line is the customer conclusion; `PASS` means
-  zero-loss for that run.
+  zero application loss with clean counters. A run whose counters cannot be
+  read (or whose gateway STATS are stale) is reported `FAIL`, never a false
+  pass.
 - `total` p50, p99, and p99.9 are the main end-to-end latency numbers.
 - p99.9 is also called p999.
 - `L1/L2/L3/L4` help localize latency to Linux TX, Ethernet, MCU/CAN, or

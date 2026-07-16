@@ -76,7 +76,8 @@ eth2can3 <-> eth2can5
 
 输出解读：
 
-- 最终 `RESULT latency` 行是客户结论；`PASS` 表示本次运行 zero-loss。
+- 最终 `RESULT latency` 行是客户结论；`PASS` 表示本次运行零丢帧且计数器
+  clean。计数器不可读、或网关 STATS 过期，会判 `FAIL`，不会误报 PASS。
 - `total` 的 p50、p99 和 p99.9 是主要端到端延迟指标。
 - p99.9 也称为 p999。
 - `L1/L2/L3/L4` 用于定位延迟来自 Linux TX、Ethernet、MCU/CAN 或 Linux RX。

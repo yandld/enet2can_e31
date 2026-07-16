@@ -14,6 +14,8 @@
 
 #include "fsl_debug_console.h"
 #include "fsl_device_registers.h"
+#include "fsl_lpuart.h"   /* direct non-blocking LPUART TX (dbg_log_drain) */
+#include "board.h"        /* BOARD_DEBUG_UART_BASEADDR */
 #include "gw_prof.h"
 
 volatile uint8_t g_dbg_level = E2CF_LOG_RUNTIME_LEVEL;
@@ -104,35 +106,52 @@ void dbg_log_emit(uint8_t level, uint32_t module, const char *fmt, ...)
     __set_PRIMASK(primask);
 }
 
+/*
+ * Non-blocking debug-UART TX: write one byte iff the LPUART TX data register
+ * is free, else return false. Mirrors uart_try_getchar below. Keeps
+ * dbg_log_drain from ever busy-waiting on the UART, so a log burst can no
+ * longer stall the superloop and delay the T_agg aggregation flush.
+ */
+static bool uart_try_putchar(uint8_t c)
+{
+    LPUART_Type *base = (LPUART_Type *)BOARD_DEBUG_UART_BASEADDR;
+
+    if ((base->STAT & LPUART_STAT_TDRE_MASK) == 0U)
+    {
+        return false; /* TX busy: retry on the next drain call */
+    }
+    base->DATA = c;
+    return true;
+}
+
 void dbg_log_drain(uint32_t budget)
 {
-    static bool s_drop_noted;
     uint32_t tail = s_tail;
     uint32_t head = s_head; /* snapshot; writers only move it forward */
 
+    /* Non-blocking: emit as many bytes as the LPUART will accept right now,
+     * then return - never busy-wait. Previously a startup log burst blocked
+     * ~ms here (blocking DbgConsole_Putchar), stalling the superloop and
+     * delaying the T_agg flush, which spiked uplink latency. Backlog stays in
+     * the ring; overflow is counted in s_dropped (readable via
+     * dbg_log_dropped() and the stats dump). */
     while ((tail != head) && (budget != 0U))
     {
-        DbgConsole_Putchar((char)s_ring[tail & RING_MASK]);
+        if (!uart_try_putchar(s_ring[tail & RING_MASK]))
+        {
+            break;
+        }
         tail++;
         budget--;
     }
     s_tail = tail;
-
-    if ((s_dropped != 0U) && !s_drop_noted && (tail == head))
-    {
-        s_drop_noted = true; /* note once; counter also shows in stats */
-        PRINTF("[W] dbg_log: %lu line(s) dropped (ring full)\r\n",
-               (unsigned long)s_dropped);
-    }
 }
 
 /* ---- tiny runtime console --------------------------------------------- */
 
 /* Non-blocking RX poll on the debug-console LPUART. The lite debug console
- * has no TryGetchar, so peek the LPUART STAT register directly. */
-#include "fsl_lpuart.h"
-#include "board.h"
-
+ * has no TryGetchar, so peek the LPUART STAT register directly.
+ * (fsl_lpuart.h / board.h are included at the top of this file.) */
 static bool uart_try_getchar(uint8_t *out)
 {
     LPUART_Type *base = (LPUART_Type *)BOARD_DEBUG_UART_BASEADDR;

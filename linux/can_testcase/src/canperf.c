@@ -80,6 +80,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -310,7 +311,9 @@ static int chan_setup(int fd, int ch, unsigned int bitrate,
 	ifindex = if_nametoindex(dev);
 	if (!ifindex)
 		return -ENODEV;
-	(void)link_set_up(fd, dev, false);
+	ret = link_set_up(fd, dev, false);
+	if (ret)
+		return ret;
 
 	memset(&req, 0, sizeof(req));
 	req.nh.nlmsg_len = NLMSG_LENGTH(sizeof(req.ifi));
@@ -558,10 +561,16 @@ struct opts {
 	unsigned int bitrate, dbitrate;
 };
 
+struct run_ctrl {
+	atomic_bool abort;
+};
+
 struct pair_ctx {
 	int tx_ch, rx_ch;
 	const struct opts *opts;
+	struct run_ctrl *run;
 	pthread_t thread;
+	bool startup_error;	/* one or more required CAN sockets did not open */
 
 	/* results - written by the pair thread; the progress reporter
 	 * reads them racily (display only), the final report reads them
@@ -573,8 +582,23 @@ struct pair_ctx {
 	 * slow, not lossy, for that probe */
 	uint64_t late_rx, late_echo;
 	uint64_t elapsed_ns;	/* measurement loop wall time */
-	volatile int done;
+	atomic_bool done;
 };
+
+static bool pair_abort_requested(const struct pair_ctx *pc)
+{
+	return atomic_load_explicit(&pc->run->abort, memory_order_acquire);
+}
+
+static bool pair_should_stop(const struct pair_ctx *pc)
+{
+	return stop_flag || pair_abort_requested(pc);
+}
+
+static void pair_abort_run(struct pair_ctx *pc)
+{
+	atomic_store_explicit(&pc->run->abort, true, memory_order_release);
+}
 
 /* The seven per-probe instants. t1/t2/nicrx/t5 are CLOCK_REALTIME (Linux);
  * X/Y are RAW gateway-clock low32 ns (used only as the difference Y-X, so
@@ -612,7 +636,7 @@ static int probe_once(struct pair_ctx *pc, int s_tx, int s_echo, int s_rx,
 
 	deadline = now_mono_ns() + (uint64_t)WAIT_FRAME_MS * 1000000ull;
 	while ((!got_echo || !got_rx) && now_mono_ns() < deadline &&
-	       !stop_flag) {
+	       !pair_should_stop(pc)) {
 		struct canfd_frame rf;
 		struct rx_stamps st;
 
@@ -668,8 +692,12 @@ static void record_sample(struct pair_ctx *pc, const uint64_t ts[TS_N])
 
 	hist_add(&pc->h_total, total);
 	hist_add(&pc->h_l1, (int64_t)(ts[TS_T2] - ts[TS_T1]));
-	hist_add(&pc->h_l4, (int64_t)(ts[TS_T5] - ts[TS_NICRX]));
-	if (ts[TS_X] && ts[TS_Y]) {
+	/* nicrx (software RX stamp) is occasionally absent on a frame that missed
+	 * net_timestamp_check; guard L4/L2 so a 0 stamp does not become a
+	 * full-clock garbage sample. total (t5-t1) is unaffected and kept. */
+	if (ts[TS_NICRX])
+		hist_add(&pc->h_l4, (int64_t)(ts[TS_T5] - ts[TS_NICRX]));
+	if (ts[TS_X] && ts[TS_Y] && ts[TS_NICRX]) {
 		/* X/Y are raw gw low32; the duration is the 32-bit difference
 		 * (residency << 4.29 s, so the wrap-safe subtraction is exact) */
 		int64_t l3 = (int64_t)(uint32_t)((uint32_t)ts[TS_Y] -
@@ -726,7 +754,7 @@ static void pair_run_window(struct pair_ctx *pc, int s_tx, int s_echo,
 	for (;;) {
 		uint64_t now = now_mono_ns();
 		uint64_t wake;
-		bool sending_done = stop_flag ||
+		bool sending_done = pair_should_stop(pc) ||
 			(o->count && seq_next >= (uint32_t)o->count) ||
 			(end_ns && now >= end_ns);
 		int i, tmo_ms;
@@ -774,7 +802,7 @@ static void pair_run_window(struct pair_ctx *pc, int s_tx, int s_echo,
 			if (grid < now)
 				grid = now;
 			now = now_mono_ns();
-			sending_done = stop_flag ||
+			sending_done = pair_should_stop(pc) ||
 				(o->count && seq_next >= (uint32_t)o->count) ||
 				(end_ns && now >= end_ns);
 		}
@@ -857,7 +885,7 @@ static void pair_run_window(struct pair_ctx *pc, int s_tx, int s_echo,
 				record_sample(pc, sl->ts);
 				sl->used = false;
 				outstanding--;
-			} else if (now >= sl->deadline || stop_flag) {
+			} else if (now >= sl->deadline || pair_should_stop(pc)) {
 				if (sl->got_rx) {
 					pc->echo_miss++;
 					record_sample(pc, sl->ts);
@@ -892,12 +920,17 @@ static void *pair_thread(void *arg)
 	s_tx = open_can_socket(tx_dev, o->size > 8, UINT32_MAX, true);
 	s_echo = open_can_socket(tx_dev, o->size > 8, can_id, true);
 	s_rx = open_can_socket(rx_dev, o->size > 8, can_id, true);
-	if (s_tx < 0 || s_echo < 0 || s_rx < 0)
+	if (s_tx < 0 || s_echo < 0 || s_rx < 0) {
+		pc->startup_error = true;
+		pair_abort_run(pc);
 		goto out;
+	}
 	/* the TX socket never reads anything back */
 	setsockopt(s_tx, SOL_CAN_RAW, CAN_RAW_FILTER, NULL, 0);
 
 	pc->elapsed_ns = now_mono_ns();
+	if (pair_abort_requested(pc))
+		goto done;
 
 	if (o->window > 1) {
 		pair_run_window(pc, s_tx, s_echo, s_rx, can_id, mtu);
@@ -906,7 +939,7 @@ static void *pair_thread(void *arg)
 
 	clock_gettime(CLOCK_MONOTONIC, &next);
 
-	for (uint32_t seq = 0; !stop_flag; seq++) {
+	for (uint32_t seq = 0; !pair_should_stop(pc); seq++) {
 		uint64_t ts[TS_N];
 
 		if (o->count && seq >= (uint32_t)o->count)
@@ -929,7 +962,7 @@ pace:
 			next.tv_sec++;
 		}
 		while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME,
-				       &next, NULL) == EINTR && !stop_flag)
+				       &next, NULL) == EINTR && !pair_should_stop(pc))
 			;
 	}
 
@@ -942,7 +975,7 @@ out:
 		close(s_echo);
 	if (s_rx >= 0)
 		close(s_rx);
-	pc->done = 1;
+	atomic_store_explicit(&pc->done, true, memory_order_release);
 	return NULL;
 }
 
@@ -1090,8 +1123,10 @@ static void summary_table(struct pair_ctx *pairs, int npairs)
 
 struct cnt_snap {
 	bool ok;
+	uint64_t gw_time_ns;	/* generation of the cached 1 Hz gateway STATS */
 	uint64_t drv_lost, drv_gaps, drv_nomem, drv_trunc, drv_tx_cn;
 	uint64_t gw_lost, gw_rej, gw_starv, gw_sfail, gw_txbusy, gw_ovf;
+	uint64_t gw_can_ovf[6];
 	uint64_t gw_up, gw_sent, gw_loop;
 	uint64_t gw_emac_drop, gw_emac_err;	/* MCU EMAC RX-ring drops/errors */
 	uint64_t rej_ctrl, rej_stopped, rej_ovf; /* non-OK TXC by reason */
@@ -1115,12 +1150,117 @@ static const char *counter_state_name(enum counter_state state)
 	}
 }
 
-/* Return the unsigned number right after `key` in `s`, 0 when absent. */
-static uint64_t find_u64(const char *s, const char *key)
+/* Locate a line by its exact prefix and return a span that never includes the
+ * following line. This prevents a missing field from being borrowed from a
+ * later gateway/driver row. */
+static bool counters_find_line(const char *buf, const char *prefix,
+			       const char **line, const char **end)
 {
-	const char *p = strstr(s, key);
+	size_t prefix_len = strlen(prefix);
+	const char *p = buf;
 
-	return p ? strtoull(p + strlen(key), NULL, 10) : 0;
+	while (*p) {
+		const char *e = strchr(p, '\n');
+
+		if (!e)
+			e = p + strlen(p);
+		if ((size_t)(e - p) >= prefix_len &&
+		    !memcmp(p, prefix, prefix_len)) {
+			*line = p;
+			*end = e;
+			return true;
+		}
+		if (!*e)
+			break;
+		p = e + 1;
+	}
+	return false;
+}
+
+/* Parse one decimal u64 field inside a single line. Missing values, signs,
+ * overflow, suffixes and values that continue on another line are invalid. */
+static bool counters_line_u64(const char *line, const char *end,
+			      const char *key, uint64_t *value)
+{
+	size_t key_len = strlen(key);
+	const char *p;
+
+	for (p = line; (size_t)(end - p) >= key_len; p++) {
+		const char *q;
+		uint64_t v = 0;
+
+		if (memcmp(p, key, key_len) ||
+		    (p != line && p[-1] != ' '))
+			continue;
+		q = p + key_len;
+		if (q == end || *q < '0' || *q > '9')
+			return false;
+		while (q < end && *q >= '0' && *q <= '9') {
+			unsigned int digit = (unsigned int)(*q - '0');
+
+			if (v > (UINT64_MAX - digit) / 10)
+				return false;
+			v = v * 10 + digit;
+			q++;
+		}
+		if (q < end && *q != ' ' && *q != '|' && *q != '\r')
+			return false;
+		*value = v;
+		return true;
+	}
+	return false;
+}
+
+/* Parse one complete debugfs snapshot. Keeping this pure makes generation
+ * handling testable without requiring debugfs, root, or a running gateway. */
+static void counters_parse_text(struct cnt_snap *s, const char *buf)
+{
+	const char *line, *end;
+	char prefix[20];
+	int i;
+
+	memset(s, 0, sizeof(*s));
+	if (!buf)
+		return;
+
+#define LINE(prefix_) \
+	(counters_find_line(buf, (prefix_), &line, &end))
+#define FIELD(key_, member_) \
+	(counters_line_u64(line, end, (key_), &(member_)))
+	if (!LINE("stats: ") || !FIELD("gw_time_ns=", s->gw_time_ns))
+		return;
+	if (!LINE("gw: rx=") || !FIELD("lost=", s->gw_lost) ||
+	    !FIELD("rej=", s->gw_rej) || !FIELD("up=", s->gw_up))
+		return;
+	if (!LINE("gw: sent=") || !FIELD("sent=", s->gw_sent) ||
+	    !FIELD("sfail=", s->gw_sfail) ||
+	    !FIELD("starv=", s->gw_starv))
+		return;
+	if (!LINE("gw: emac rx=") || !FIELD("rxerr=", s->gw_emac_err) ||
+	    !FIELD("rxdrop=", s->gw_emac_drop) ||
+	    !FIELD("txbusy=", s->gw_txbusy) ||
+	    !FIELD("loop=", s->gw_loop))
+		return;
+	for (i = 0; i < 6; i++) {
+		snprintf(prefix, sizeof(prefix), "gw CAN%d: ", i);
+		if (!LINE(prefix) || !FIELD("ovf=", s->gw_can_ovf[i]) ||
+		    UINT64_MAX - s->gw_ovf < s->gw_can_ovf[i])
+			return;
+		s->gw_ovf += s->gw_can_ovf[i];
+	}
+	if (!LINE("drv: rx=") || !FIELD("lost=", s->drv_lost) ||
+	    !FIELD("gaps=", s->drv_gaps) ||
+	    !FIELD("nomem=", s->drv_nomem) ||
+	    !FIELD("trunc=", s->drv_trunc) ||
+	    !FIELD("tx_cn=", s->drv_tx_cn))
+		return;
+	if (!LINE("drv: txc_rej ") || !FIELD("ctrl_error=", s->rej_ctrl) ||
+	    !FIELD("chan_stopped=", s->rej_stopped) ||
+	    !FIELD("queue_ovf=", s->rej_ovf))
+		return;
+#undef FIELD
+#undef LINE
+	s->ok = true;
 }
 
 /* Read /sys/kernel/debug/eth2can/stats (local file, zero tooling).
@@ -1129,59 +1269,90 @@ static uint64_t find_u64(const char *s, const char *key)
 static void counters_snapshot(struct cnt_snap *s)
 {
 	static char buf[8192];
-	const char *gw, *drv, *p;
 	size_t n;
+	bool read_failed;
 	FILE *f = fopen("/sys/kernel/debug/eth2can/stats", "r");
 
 	memset(s, 0, sizeof(*s));
 	if (!f)
 		return;
 	n = fread(buf, 1, sizeof(buf) - 1, f);
+	read_failed = ferror(f);
 	fclose(f);
-	buf[n] = '\0';
-
-	gw = strstr(buf, "\ngw: ");
-	drv = strstr(buf, "\ndrv: ");
-	if (!gw || !drv)
+	if (read_failed || n == sizeof(buf) - 1)
 		return;
-	s->gw_lost = find_u64(gw, "lost=");
-	s->gw_rej = find_u64(gw, "rej=");
-	s->gw_up = find_u64(gw, "up=");
-	s->gw_starv = find_u64(gw, "starv=");
-	s->gw_sfail = find_u64(gw, "sfail=");
-	s->gw_sent = find_u64(gw, "sent=");
-	s->gw_txbusy = find_u64(gw, "txbusy=");
-	s->gw_loop = find_u64(gw, "loop=");
-	s->gw_emac_drop = find_u64(gw, "rxdrop=");
-	s->gw_emac_err = find_u64(gw, "rxerr=");
-	for (p = strstr(buf, "gw CAN"); p; p = strstr(p + 1, "gw CAN"))
-		s->gw_ovf += find_u64(p, " ovf=");
-	p = strstr(buf, "txc_rej");
-	if (p) {
-		s->rej_ctrl = find_u64(p, "ctrl_error=");
-		s->rej_stopped = find_u64(p, "chan_stopped=");
-		s->rej_ovf = find_u64(p, "queue_ovf=");
+	buf[n] = '\0';
+	counters_parse_text(s, buf);
+}
+
+typedef void (*counter_reader_fn)(struct cnt_snap *s, void *opaque);
+
+/* STATS is pushed at 1 Hz. Poll for at most 1.5 seconds so the post-run
+ * snapshot must come from a different cache generation without hanging when
+ * debugfs or the gateway disappears. The first read is immediate. */
+#define COUNTERS_POLL_US 50000U
+#define COUNTERS_MAX_READS (1500000U / COUNTERS_POLL_US + 1U)
+
+static bool counters_wait_new_generation(const struct cnt_snap *before,
+					 struct cnt_snap *after,
+					 counter_reader_fn reader,
+					 void *opaque,
+					 unsigned int max_reads,
+					 useconds_t poll_us)
+{
+	unsigned int i;
+
+	memset(after, 0, sizeof(*after));
+	if (!before->ok || !reader || !max_reads)
+		return false;
+	for (i = 0; i < max_reads; i++) {
+		if (i && poll_us)
+			usleep(poll_us);
+		reader(after, opaque);
+		if (!after->ok)
+			return false;
+		if (after->gw_time_ns != before->gw_time_ns)
+			return true;
 	}
-	s->drv_lost = find_u64(drv, "lost=");
-	s->drv_gaps = find_u64(drv, "gaps=");
-	s->drv_nomem = find_u64(drv, "nomem=");
-	s->drv_trunc = find_u64(drv, "trunc=");
-	s->drv_tx_cn = find_u64(drv, "tx_cn=");
-	s->ok = true;
+	memset(after, 0, sizeof(*after));
+	return false;
+}
+
+static void counters_read_live(struct cnt_snap *s, void *opaque)
+{
+	(void)opaque;
+	counters_snapshot(s);
 }
 
 static enum counter_state counters_state(const struct cnt_snap *a,
 					 const struct cnt_snap *b)
 {
 #define DELTA(f) (b->f - a->f)
-	if (!a->ok || !b->ok)
+#define REGRESSED(f) (b->f < a->f)
+	int i;
+
+	if (!a->ok || !b->ok || b->gw_time_ns <= a->gw_time_ns)
 		return COUNTERS_UNAVAILABLE;
+	if (REGRESSED(drv_lost) || REGRESSED(drv_gaps) ||
+	    REGRESSED(drv_nomem) || REGRESSED(drv_trunc) ||
+	    REGRESSED(drv_tx_cn) || REGRESSED(gw_lost) ||
+	    REGRESSED(gw_rej) || REGRESSED(gw_starv) ||
+	    REGRESSED(gw_sfail) || REGRESSED(gw_txbusy) ||
+	    REGRESSED(gw_up) || REGRESSED(gw_sent) ||
+	    REGRESSED(gw_emac_drop) || REGRESSED(gw_emac_err) ||
+	    REGRESSED(rej_ctrl) || REGRESSED(rej_stopped) ||
+	    REGRESSED(rej_ovf))
+		return COUNTERS_UNAVAILABLE;
+	for (i = 0; i < 6; i++)
+		if (b->gw_can_ovf[i] < a->gw_can_ovf[i])
+			return COUNTERS_UNAVAILABLE;
 	if (DELTA(drv_lost) || DELTA(drv_nomem) || DELTA(drv_trunc) ||
 	    DELTA(gw_lost) || DELTA(gw_rej) || DELTA(gw_starv) ||
 	    DELTA(gw_sfail) || DELTA(gw_ovf) || DELTA(gw_emac_drop) ||
 	    DELTA(gw_emac_err))
 		return COUNTERS_DIRTY;
 	return COUNTERS_CLEAN;
+#undef REGRESSED
 #undef DELTA
 }
 
@@ -1191,8 +1362,11 @@ static enum counter_state counters_delta(const struct cnt_snap *a,
 {
 	enum counter_state state = counters_state(a, b);
 
-	if (!a->ok || !b->ok) {
-		printf("counters: unavailable (/sys/kernel/debug/eth2can/stats not readable)\n");
+	if (state == COUNTERS_UNAVAILABLE) {
+		if (a->ok && b->ok)
+			printf("counters: unavailable (gateway STATS stale or reset)\n");
+		else
+			printf("counters: unavailable (snapshot not readable or stale)\n");
 		return state;
 	}
 #define DELTA(f) ((unsigned long long)(b->f - a->f))
@@ -1272,7 +1446,8 @@ static struct run_summary summarize_pairs(struct pair_ctx *pairs, int npairs)
 
 static bool run_zero_loss(const struct run_summary *s, enum counter_state counters)
 {
-	return s->lost == 0 && counters != COUNTERS_DIRTY;
+	return s->sent > 0 && s->samples > 0 && s->lost == 0 &&
+	       counters == COUNTERS_CLEAN;
 }
 
 static void print_latency_evidence(const struct run_summary *s,
@@ -1363,17 +1538,22 @@ static int live_rt_draw(struct pair_ctx *pairs, int npairs, double el,
 static int run_pairs(const struct opts *o, struct pair_ctx *pairs,
 		     int npairs, bool quiet)
 {
-	int i;
+	struct run_ctrl run;
+	int i, ret = 0;
 
+	atomic_init(&run.abort, false);
 	for (i = 0; i < npairs; i++) {
 		pairs[i].opts = o;
-		pairs[i].done = 0;
+		pairs[i].run = &run;
+		atomic_init(&pairs[i].done, false);
+		pairs[i].startup_error = false;
 		if (pthread_create(&pairs[i].thread, NULL, pair_thread,
 				   &pairs[i])) {
 			perror("pthread_create");
 			/* stop and reap the threads already running so they
 			 * are not killed mid-write by exit() */
-			stop_flag = 1;
+			atomic_store_explicit(&run.abort, true,
+					      memory_order_release);
 			while (--i >= 0)
 				pthread_join(pairs[i].thread, NULL);
 			return 1;
@@ -1392,7 +1572,8 @@ static int run_pairs(const struct opts *o, struct pair_ctx *pairs,
 			uint64_t now = now_mono_ns();
 
 			for (i = 0; i < npairs; i++)
-				if (!pairs[i].done)
+				if (!atomic_load_explicit(&pairs[i].done,
+							 memory_order_acquire))
 					all_done = false;
 			if (live && (first ||
 			    (now - last_render) >= (uint64_t)(interval * 1e9))) {
@@ -1414,9 +1595,16 @@ static int run_pairs(const struct opts *o, struct pair_ctx *pairs,
 			printf("\n"); /* leave the dashboard; final tables follow */
 	}
 
-	for (i = 0; i < npairs; i++)
+	for (i = 0; i < npairs; i++) {
 		pthread_join(pairs[i].thread, NULL);
-	return 0;
+		if (pairs[i].startup_error) {
+			fprintf(stderr,
+				"error: pair %d:%d could not open required CAN sockets\n",
+				pairs[i].tx_ch, pairs[i].rx_ch);
+			ret = 1;
+		}
+	}
+	return ret;
 }
 
 /* ========================================================================
@@ -1547,8 +1735,10 @@ static int sweep_run(struct opts *o, struct pair_ctx *pairs, int npairs)
 			pair_reset(&pairs[i]);
 		if (run_pairs(&confirm, pairs, npairs, true))
 			return 1;
-		usleep(1100000);
-		counters_snapshot(&snap1);
+		counters_wait_new_generation(&snap0, &snap1,
+					     counters_read_live, NULL,
+					     COUNTERS_MAX_READS,
+					     COUNTERS_POLL_US);
 		final = summarize_pairs(pairs, npairs);
 		counters = counters_delta(&snap0, &snap1);
 
@@ -1832,6 +2022,7 @@ int main(int argc, char **argv)
 	if (opts.setup) {
 		int nlfd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC,
 				  NETLINK_ROUTE);
+		bool setup_failed = false;
 
 		if (nlfd < 0) {
 			perror("netlink");
@@ -1842,14 +2033,23 @@ int main(int argc, char **argv)
 		for (int i = 0; i < npairs; i++)
 			for (int k = 0; k < 2; k++) {
 				int ch = k ? pairs[i].rx_ch : pairs[i].tx_ch;
+				int setup_err;
 
-				if (chan_setup(nlfd, ch, opts.bitrate,
-					       opts.dbitrate))
+				setup_err = chan_setup(nlfd, ch, opts.bitrate,
+						       opts.dbitrate);
+				if (setup_err) {
 					fprintf(stderr,
-						"warning: eth2can%d setup failed (gateway alive?)\n",
-						ch);
+						"warning: eth2can%d setup failed (%s)\n",
+						ch, strerror(-setup_err));
+					setup_failed = true;
+				}
 			}
 		close(nlfd);
+		if (setup_failed) {
+			fprintf(stderr,
+				"error: requested channel setup failed; use --no-setup only for preconfigured interfaces\n");
+			return 1;
+		}
 		/* wait for the gateway heartbeat and the first TIME anchor
 		 * (the hardware timestamps depend on it) */
 		printf("waiting for the gateway time anchor (TIME, 1 Hz) ...\n");
@@ -1873,7 +2073,8 @@ int main(int argc, char **argv)
 			ret = 1;
 	}
 	summary_table(pairs, npairs);
-	counters_snapshot(&snap1);
+	counters_wait_new_generation(&snap0, &snap1, counters_read_live, NULL,
+				     COUNTERS_MAX_READS, COUNTERS_POLL_US);
 	{
 		struct run_summary sum = summarize_pairs(pairs, npairs);
 		enum counter_state counters = counters_delta(&snap0, &snap1);
