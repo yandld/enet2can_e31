@@ -12,21 +12,7 @@ gateway.
 
 The basic architecture is outlined below:
 
-```mermaid
-flowchart LR
-    app["SocketCAN applications<br/>candump / cansend / canperf"]
-    drv["Linux eth2can.ko<br/>eth2can0..eth2can5"]
-    eth["Raw Ethernet E2CF<br/>EtherType 0x88B5"]
-    mcu["MCXE31B gateway firmware<br/>ENET_QOS + E2CF core"]
-    can["FlexCAN0..FlexCAN5"]
-    bus["Six physical CAN FD buses"]
-
-    app --> drv
-    drv <--> eth
-    eth <--> mcu
-    mcu <--> can
-    can <--> bus
-```
+![MCXE31B Ethernet-to-six-CAN FD bridge system overview](docs/an_assets/system_overview.svg)
 
 * **Linux SocketCAN driver:** `eth2can.ko` binds to one Ethernet interface,
   exchanges raw E2CF Layer-2 frames with the gateway, and exposes six CAN FD
@@ -97,6 +83,8 @@ Message types used by this delivery:
 | TIME | MCXE31B to Linux | Gateway time mapping |
 | HB | Both directions | Peer discovery and heartbeat supervision |
 | STATS | MCXE31B to Linux | Gateway counters for diagnostics and validation |
+
+![E2CF data and management paths between Linux and the MCXE31B gateway](docs/an_assets/data_path.svg)
 
 For protocol details, see
 [`docs/e2cf-protocol-spec.md`](docs/e2cf-protocol-spec.md).

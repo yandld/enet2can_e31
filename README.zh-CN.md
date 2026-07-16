@@ -10,21 +10,7 @@
 
 基本架构如下：
 
-```mermaid
-flowchart LR
-    app["SocketCAN applications<br/>candump / cansend / canperf"]
-    drv["Linux eth2can.ko<br/>eth2can0..eth2can5"]
-    eth["Raw Ethernet E2CF<br/>EtherType 0x88B5"]
-    mcu["MCXE31B gateway firmware<br/>ENET_QOS + E2CF core"]
-    can["FlexCAN0..FlexCAN5"]
-    bus["Six physical CAN FD buses"]
-
-    app --> drv
-    drv <--> eth
-    eth <--> mcu
-    mcu <--> can
-    can <--> bus
-```
+![MCXE31B 以太网转六路 CAN FD 桥接器总体架构](docs/an_assets/system_overview.svg)
 
 * **Linux SocketCAN driver:** `eth2can.ko` 绑定一个 Ethernet 接口，通过 raw
   E2CF Layer-2 frame 与网关通信，并将六个 CAN FD 通道暴露为 SocketCAN 设备。
@@ -93,6 +79,8 @@ statistics。
 | TIME | MCXE31B 到 Linux | Gateway time mapping |
 | HB | 双向 | Peer discovery 和 heartbeat supervision |
 | STATS | MCXE31B 到 Linux | 用于 diagnostics 和 validation 的 gateway counters |
+
+![Linux 与 MCXE31B 网关之间的 E2CF 数据与管理路径](docs/an_assets/data_path.svg)
 
 协议细节见 [`docs/e2cf-protocol-spec.md`](docs/e2cf-protocol-spec.md)。
 

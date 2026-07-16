@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-labelledby="title desc">
+  <title id="title">MCXE31B Ethernet-to-Six-CAN FD Bridge System Overview</title>
+  <desc id="desc">Linux host uses raw Ethernet E2CF transport to an MCXE31B gateway, which bridges traffic to six CAN FD channels.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#174A7C"/>
+    </marker>
+    <style>
+      svg { text-rendering: geometricPrecision; shape-rendering: geometricPrecision; }
+      .title { font: 700 18px Arial, sans-serif; fill: #17324D; }
+      .label { font: 700 13px Arial, sans-serif; fill: #17324D; }
+      .body { font: 12px Arial, sans-serif; fill: #23384D; }
+      .small { font: 10.5px Arial, sans-serif; fill: #395166; }
+      .box { fill: #F8FAFC; stroke: #7890A8; stroke-width: 1.3; rx: 7; }
+      .box2 { fill: #EFF6FF; stroke: #2E74B5; stroke-width: 1.5; rx: 7; }
+      .can { fill: #F6F8FB; stroke: #647486; stroke-width: 1.2; rx: 5; }
+      .legend { fill: #F8FAFC; stroke: #D4DEE8; stroke-width: 1; rx: 6; }
+      .line { stroke: #174A7C; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .thin { stroke: #8EA5BA; stroke-width: 1.1; fill: none; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="880" height="360" fill="#FFFFFF"/>
+  <text x="28" y="34" class="title">MCXE31B Ethernet-to-Six-CAN FD Bridge</text>
+
+  <rect x="38" y="82" width="210" height="148" class="box"/>
+  <text x="66" y="112" class="label">Linux host</text>
+  <text class="body">
+    <tspan x="66" y="139">eth2can.ko</tspan>
+    <tspan x="66" y="161">SocketCAN eth2can0..5</tspan>
+    <tspan x="66" y="183">ip link, candump</tspan>
+    <tspan x="66" y="205">cansend, canperf</tspan>
+  </text>
+
+  <rect x="338" y="66" width="250" height="178" class="box2"/>
+  <text x="380" y="96" class="label">MCXE31B gateway</text>
+  <text class="body">
+    <tspan x="370" y="124">ENET_QOS raw Layer 2</tspan>
+    <tspan x="370" y="146">E2CF protocol core</tspan>
+    <tspan x="370" y="168">FlexCAN0..FlexCAN5</tspan>
+    <tspan x="370" y="195">Bare-metal superloop</tspan>
+    <tspan x="370" y="217">CAN FD 1 Mbit/s / 5 Mbit/s BRS</tspan>
+  </text>
+
+  <path d="M248 156 C282 156, 302 156, 330 156" class="line"/>
+
+  <g>
+    <rect x="708" y="46" width="138" height="30" class="can"/>
+    <rect x="708" y="88" width="138" height="30" class="can"/>
+    <rect x="708" y="130" width="138" height="30" class="can"/>
+    <rect x="708" y="172" width="138" height="30" class="can"/>
+    <rect x="708" y="214" width="138" height="30" class="can"/>
+    <rect x="708" y="256" width="138" height="30" class="can"/>
+    <text class="body">
+      <tspan x="733" y="66">CAN FD 0</tspan>
+      <tspan x="733" y="108">CAN FD 1</tspan>
+      <tspan x="733" y="150">CAN FD 2</tspan>
+      <tspan x="733" y="192">CAN FD 3</tspan>
+      <tspan x="733" y="234">CAN FD 4</tspan>
+      <tspan x="733" y="276">CAN FD 5</tspan>
+    </text>
+  </g>
+
+  <path d="M588 102 C632 92, 662 72, 700 61" class="line"/>
+  <path d="M588 126 C632 118, 662 106, 700 103" class="line"/>
+  <path d="M588 150 C632 154, 662 148, 700 145" class="line"/>
+  <path d="M588 174 C632 184, 662 190, 700 187" class="line"/>
+  <path d="M588 198 C632 216, 662 232, 700 229" class="line"/>
+  <path d="M588 222 C632 250, 662 274, 700 271" class="line"/>
+
+  <line x1="76" y1="265" x2="210" y2="265" class="thin"/>
+  <line x1="392" y1="265" x2="530" y2="265" class="thin"/>
+  <line x1="724" y1="302" x2="832" y2="302" class="thin"/>
+  <text x="58" y="292" class="small">Host driver and test tools</text>
+  <text x="372" y="292" class="small">Gateway firmware and transport</text>
+  <text x="701" y="325" class="small">Six physical CAN FD channels</text>
+
+  <rect x="52" y="314" width="566" height="32" class="legend"/>
+  <text class="small">
+    <tspan x="68" y="335">Transport: raw Ethernet E2CF, EtherType 0x88B5, VLAN VID 100 supported for deployment.</tspan>
+  </text>
+</svg>
